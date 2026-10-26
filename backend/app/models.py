@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    JSON,
     Integer,
     Numeric,
     String,
@@ -149,3 +150,58 @@ class Position(Base):
     realized_pnl: Mapped[Decimal] = mapped_column(Money, default=Decimal(0))
 
     instrument: Mapped[Instrument] = relationship()
+
+
+class Bot(Base):
+    """An automated strategy trading one instrument, long only, one position at a time."""
+
+    __tablename__ = "bots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    symbol: Mapped[str] = mapped_column(String(20))
+    broker: Mapped[str] = mapped_column(Enum("paper", "oanda", name="bot_broker"), default="paper")
+    strategy: Mapped[str] = mapped_column(String(30))
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    interval: Mapped[str] = mapped_column(String(5), default="5m")
+    trade_size_usd: Mapped[Decimal] = mapped_column(Money)
+    stop_loss_pct: Mapped[float | None] = mapped_column(nullable=True)
+    take_profit_pct: Mapped[float | None] = mapped_column(nullable=True)
+    status: Mapped[str] = mapped_column(Enum("running", "stopped", "error", name="bot_status"), default="stopped")
+    error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # Current open position (quantity 0 = flat)
+    position_qty: Mapped[Decimal] = mapped_column(Money, default=Decimal(0))
+    entry_price: Mapped[Decimal | None] = mapped_column(Money, nullable=True)
+    external_trade_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    last_candle_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Running stats
+    realized_pnl: Mapped[Decimal] = mapped_column(Money, default=Decimal(0))
+    trades_closed: Mapped[int] = mapped_column(Integer, default=0)
+    wins: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class BotTrade(Base):
+    __tablename__ = "bot_trades"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bot_id: Mapped[int] = mapped_column(ForeignKey("bots.id"), index=True)
+    action: Mapped[str] = mapped_column(Enum("open", "close", name="bot_trade_action"))
+    reason: Mapped[str] = mapped_column(String(30))  # signal / stop_loss / take_profit / manual
+    quantity: Mapped[Decimal] = mapped_column(Money)
+    price: Mapped[Decimal] = mapped_column(Money)
+    pnl: Mapped[Decimal | None] = mapped_column(Money, nullable=True)
+    order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"), nullable=True)
+    external_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class BotLog(Base):
+    __tablename__ = "bot_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bot_id: Mapped[int] = mapped_column(ForeignKey("bots.id"), index=True)
+    level: Mapped[str] = mapped_column(String(10), default="info")
+    message: Mapped[str] = mapped_column(String(400))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

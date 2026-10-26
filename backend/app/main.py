@@ -8,10 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
 from . import models
-from .config import CORS_ORIGINS
+from .config import BACKGROUND_WORKERS, CORS_ORIGINS
 from .database import Base, SessionLocal, engine
 from .market import INSTRUMENTS
-from .routers import auth, markets, orders, portfolio, wallet
+from .bots import run_bots
+from .routers import auth, bots, markets, orders, portfolio, wallet
 from .trading import match_open_orders
 
 log = logging.getLogger("moneyfx")
@@ -40,18 +41,34 @@ async def matcher(interval: float = 1.0):
         await asyncio.sleep(interval)
 
 
+def _run_bots_once():
+    with SessionLocal() as db:
+        run_bots(db)
+
+
+async def bot_runner(interval: float = 2.0):
+    while True:
+        try:
+            # Broker calls block on the network, so keep them off the event loop.
+            await asyncio.to_thread(_run_bots_once)
+        except Exception:
+            log.exception("bot runner failed")
+        await asyncio.sleep(interval)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    task = asyncio.create_task(matcher())
+    tasks = [asyncio.create_task(matcher()), asyncio.create_task(bot_runner())] if BACKGROUND_WORKERS else []
     yield
-    task.cancel()
+    for task in tasks:
+        task.cancel()
 
 
 app = FastAPI(title="money fx API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
-for r in (auth, wallet, markets, orders, portfolio):
+for r in (auth, wallet, markets, orders, portfolio, bots):
     app.include_router(r.router)
 
 
