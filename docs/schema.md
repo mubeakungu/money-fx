@@ -24,7 +24,7 @@ users 1──1 accounts 1──* wallets 1──* transactions
 ## Market data
 
 Prices are not stored. `backend/app/market.py` generates them as a deterministic function of
-symbol and time (overlapping cycles plus noise), so quotes, candles and fills always agree and
+symbol and time (multi-scale fractal noise that behaves like a random walk), so quotes, candles and fills always agree and
 any history range can be served without a tick table. Buys fill at the ask and sells at the
 bid, with a per-instrument spread.
 
@@ -38,3 +38,13 @@ interval, open_time, o/h/l/c/v) to cache history from the provider.
 - Market orders fill immediately against the current quote, or are recorded as `rejected` with a reason.
 - Limit orders reserve cash (buys) and rest as `open`; a background task checks them every second and fills at the quote once the limit is reached. A marketable limit fills immediately at the better market price.
 - Deposits and withdrawals are simulated and settle instantly.
+
+## Bots
+
+| Table | Purpose | Key columns |
+|---|---|---|
+| `bots` | One automated strategy on one instrument | `broker` (paper / oanda), `strategy`, `params` (JSON), `interval`, `trade_size_usd`, `stop_loss_pct`, `take_profit_pct`, `status` (running / stopped / error), open position (`position_qty`, `entry_price`, `external_trade_id` for OANDA), `last_candle_time`, stats (`realized_pnl`, `trades_closed`, `wins`) |
+| `bot_trades` | Every open and close a bot made | `action` (open / close), `reason` (signal / stop_loss / take_profit / manual / closed_on_oanda), `quantity`, `price`, `pnl`, `order_id` (paper) or `external_id` (OANDA trade ID) |
+| `bot_logs` | Human-readable activity log | `level`, `message` |
+
+Existing SQLite databases pick up the new tables automatically on start (`create_all`).

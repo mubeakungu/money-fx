@@ -1,0 +1,28 @@
+# One-click deploy on Render: https://render.com/deploy?repo=https://github.com/mubeakungu/money-fx
+# Runs as a single instance: the bot runner and SQLite database live in this one container.
+services:
+  - type: web
+    name: money-fx
+    runtime: docker
+    plan: starter          # a persistent disk needs a paid plan; on free, data resets on every deploy
+    healthCheckPath: /api/health
+    numInstances: 1
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: MONEYFX_ENV
+        value: production
+      - key: MONEYFX_SECRET_KEY
+        generateValue: true
+      - key: MONEYFX_CORS_ORIGINS
+        value: ""
+      - key: OANDA_ENV
+        value: practice
+      - key: OANDA_API_TOKEN
+        sync: false
+      - key: OANDA_ACCOUNT_ID
+        sync: false
+      - key: OANDA_OWNER_EMAILS
+        sync: false

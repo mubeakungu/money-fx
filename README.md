@@ -1,11 +1,13 @@
 # money fx
 
-A multi-asset trading platform: forex, crypto, stocks and commodities in one USD account.
-Python (FastAPI + SQLAlchemy) backend, React (Vite) frontend, mock real-time market data.
+A multi-asset trading platform and trading bot: forex, crypto, stocks and commodities.
+Python (FastAPI + SQLAlchemy) backend, React (Vite) frontend, simulated real-time market data,
+and automated bots that paper trade or trade your own **OANDA** account.
 
-Core flow working end to end: **sign up → deposit → place order → view portfolio**.
+- Manual trading: **sign up → deposit → place order → view portfolio**
+- Bots: **pick a strategy → backtest it → start it → it trades by itself with stop-loss and take-profit**
 
-![Trade screen](docs/screenshots/3-trade.png)
+![Backtest](docs/screenshots/7-backtest.png)
 
 ## Run it locally
 
@@ -28,6 +30,90 @@ Open http://localhost:5173, create an account, deposit demo funds on the Wallet 
 
 Run the backend tests with `cd backend && pytest`.
 
+## Deploy (publish it online)
+
+The repo includes a `Dockerfile` that builds the React app and serves it together with the API
+from one container, and a `render.yaml` blueprint for one-click hosting on Render:
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/mubeakungu/money-fx)
+
+1. Click the button and sign in to Render with GitHub.
+2. Fill in the OANDA values when asked (leave them blank to run paper-only).
+   Set `OANDA_OWNER_EMAILS` to the email you will sign up with.
+3. Render builds the image and gives you a public `https://money-fx-xxxx.onrender.com` URL.
+
+The blueprint uses Render's Starter plan (about $7/month) because the bot must run 24/7 and the
+SQLite database needs a persistent disk. On the free plan the service sleeps when idle, so bots
+stop trading, and the data is wiped on every deploy.
+
+Any other Docker host works too (Railway, Fly.io, a VPS):
+
+```bash
+docker build -t money-fx .
+docker run -p 8000:8000 -v moneyfx-data:/data \
+  -e MONEYFX_ENV=production -e MONEYFX_SECRET_KEY=$(openssl rand -hex 32) \
+  -e OANDA_API_TOKEN=... -e OANDA_ACCOUNT_ID=... -e OANDA_OWNER_EMAILS=you@example.com \
+  money-fx
+```
+
+Run exactly one instance: the bot runner and the SQLite database live inside the container.
+
+**Who can do what on a public deployment.** Anyone can sign up and paper trade with fake money.
+Only the emails in `OANDA_OWNER_EMAILS` can see the OANDA account or create OANDA bots. If it is
+empty, nobody can. The server refuses to start in production without `MONEYFX_SECRET_KEY`.
+
+## Trading bots
+
+Open the **Bots** page. Each bot trades one market with one strategy, holding at most one
+long position at a time:
+
+| Strategy | Buys when | Sells when |
+|---|---|---|
+| Moving average crossover | the fast average crosses above the slow one | it crosses back below |
+| RSI mean reversion | RSI climbs back above the oversold level | RSI falls back below the overbought level |
+| Channel breakout | price closes above the highest high of the last N candles | price closes below the lowest low |
+
+Every bot also has an optional **stop-loss %** and **take-profit %**, and a fixed USD size per trade.
+
+1. **Backtest first.** "Run backtest" replays the strategy over past candles and shows return,
+   win rate, profit factor, max drawdown and an equity curve, compared with simply buying and holding.
+2. **Paper trade.** Create the bot with "Trade on: Paper". It trades your money fx demo balance
+   on simulated prices. Check its trades and activity log on the bot's page.
+3. **OANDA practice, then live.** Connect OANDA (below) and pick "Trade on: OANDA". Stop-loss and
+   take-profit are attached to each OANDA order, so OANDA enforces them even if your computer
+   or this server is off.
+
+The bot checks once per closed candle (it never acts on a half-formed candle) and watches stops
+every 2 seconds. If a bot hits 5 errors in a row (for example not enough funds), it stops itself.
+
+### Connect OANDA
+
+1. Open a free **practice** account at oanda.com (fxTrade Practice).
+2. In the OANDA hub go to *Manage API Access* and generate a personal access token.
+3. Find your v20 account ID (looks like `101-004-1234567-001`).
+4. Start the API with those values set:
+
+```bash
+export OANDA_API_TOKEN=your-token
+export OANDA_ACCOUNT_ID=101-004-1234567-001
+export OANDA_ENV=practice          # change to "live" only when you are ready for real money
+export OANDA_OWNER_EMAILS=you@example.com   # the money fx login allowed to use OANDA
+uvicorn app.main:app
+```
+
+The Bots page shows a green "OANDA practice connected" banner with your balance when it works.
+OANDA bots can trade EUR/USD, GBP/USD, AUD/USD, NZD/USD, gold (XAU), silver (XAG) and WTI oil;
+which ones your account can actually trade depends on your OANDA region. Backtests on an OANDA
+bot use OANDA's real historical candles.
+
+Notes for live use:
+- Keep the token secret. It can place trades on your account.
+- The trade size is in USD and converted to units at the current price. P&L shown for OANDA
+  trades is in your OANDA account currency.
+- Bots are long only for now (they buy, then sell). Shorting is a planned addition.
+- A strategy that wins on simulated prices proves nothing. The simulated feed is a random walk.
+  Judge a strategy on OANDA data and a few weeks of practice trading before going live.
+
 ## Features
 
 | Area | What works now |
@@ -37,6 +123,7 @@ Run the backend tests with `cd backend && pytest`.
 | Markets | 14 instruments: EUR/USD, GBP/USD, AUD/USD, NZD/USD, BTC, ETH, SOL, AAPL, MSFT, TSLA, NVDA, gold, silver, WTI oil |
 | Charts | Candlestick charts (1m to 1d) with live updates over WebSocket |
 | Orders | Market and limit orders, buy and sell, bid/ask spread, cancel open orders, rejections with reasons |
+| Bots | 3 strategies, backtester, paper and OANDA execution, stop-loss/take-profit, per-bot P&L, trade history and activity log |
 | Portfolio | Holdings, average price, live value, unrealized and realized P&L, total return, allocation by asset class |
 
 ## API
@@ -53,6 +140,11 @@ Run the backend tests with `cd backend && pytest`.
 | POST / GET | `/api/orders` | `{symbol, side, type, quantity, limit_price?}` |
 | DELETE | `/api/orders/{id}` | Cancel an open order |
 | GET | `/api/portfolio` | |
+| GET | `/api/bots/strategies`, `/api/bots/brokers` | Strategy list, OANDA connection status |
+| POST | `/api/bots/backtest` | Strategy config plus `bars`, `capital` |
+| GET / POST | `/api/bots` | List or create bots |
+| GET / DELETE | `/api/bots/{id}` | Bot with trades and activity log |
+| POST | `/api/bots/{id}/start`, `/stop`, `/close-position` | |
 
 ## Project layout
 
@@ -61,13 +153,16 @@ backend/
   app/
     main.py        app setup, instrument seeding, limit-order matcher
     models.py      database schema (see docs/schema.md)
-    market.py      mock price feed (swap for a live provider)
+    market.py      simulated price feed
     trading.py     order execution and position accounting
-    routers/       auth, wallet, markets, orders, portfolio
+    strategies.py  bot strategies and indicators
+    bots.py        bot runner and backtester
+    brokers.py     paper broker and OANDA v20 broker
+    routers/       auth, wallet, markets, orders, portfolio, bots
   tests/           end-to-end API tests
 frontend/
   src/
-    pages/         Trade, Portfolio, Wallet, Orders, Account, Auth
+    pages/         Trade, Bots, BotDetail, Portfolio, Wallet, Orders, Account, Auth
     components/    MarketList, PriceChart, OrderTicket, Layout
 docs/schema.md     schema and trading rules
 ```
@@ -80,6 +175,11 @@ docs/schema.md     schema and trading rules
 | `MONEYFX_SECRET_KEY` | `dev-secret-change-me` (**change in any shared deployment**) |
 | `MONEYFX_TOKEN_MINUTES` | `720` |
 | `MONEYFX_CORS_ORIGINS` | `http://localhost:5173` |
+| `OANDA_API_TOKEN`, `OANDA_ACCOUNT_ID` | unset (OANDA disabled) |
+| `OANDA_ENV` | `practice` (`live` for real money) |
+| `OANDA_OWNER_EMAILS` | unset: comma-separated logins allowed to trade on OANDA |
+| `MONEYFX_ENV` | unset; `production` requires a real secret key |
+| `MONEYFX_STATIC_DIR` | unset; path of the built frontend to serve (the Dockerfile sets it) |
 
 ## Not built yet
 

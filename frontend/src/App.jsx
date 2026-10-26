@@ -3,6 +3,8 @@ import { useAuth } from './auth'
 import Layout from './components/Layout'
 import { QuotesProvider } from './quotes'
 import Account from './pages/Account'
+import BotDetail from './pages/BotDetail'
+import Bots from './pages/Bots'
 import { Login, Register } from './pages/Auth'
 import Orders from './pages/Orders'
 import Portfolio from './pages/Portfolio'
@@ -27,6 +29,8 @@ export default function App() {
       <Route path="/portfolio" element={<Protected><Portfolio /></Protected>} />
       <Route path="/wallet" element={<Protected><Wallet /></Protected>} />
       <Route path="/orders" element={<Protected><Orders /></Protected>} />
+      <Route path="/bots" element={<Protected><Bots /></Protected>} />
+      <Route path="/bots/:id" element={<Protected><BotDetail /></Protected>} />
       <Route path="/account" element={<Protected><Account /></Protected>} />
       <Route path="*" element={<Navigate to="/" />} />
     </Routes>

@@ -4,6 +4,7 @@ import { useQuotes } from '../quotes'
 
 const NAV = [
   ['/', 'Trade'],
+  ['/bots', 'Bots'],
   ['/portfolio', 'Portfolio'],
   ['/wallet', 'Wallet'],
   ['/orders', 'Orders'],

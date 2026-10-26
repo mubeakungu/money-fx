@@ -25,7 +25,7 @@ Required before any real user deposits real funds. These are legal and safety re
 
 ## Nice-to-haves (after launch)
 
-- Stop-loss and take-profit orders
+- ~~Stop-loss and take-profit orders~~ (done for bots)
 - Leverage, margin and short selling (common for forex and CFDs, heavily regulated)
 - Multi-currency wallets (hold EUR, KES, BTC directly) and FX conversion
 - Watchlists and price alerts (push/email)
@@ -36,3 +36,12 @@ Required before any real user deposits real funds. These are legal and safety re
 - Mobile app (React Native can reuse much of the frontend logic)
 - Social / copy trading
 - Admin back office: user management, KYC review, manual balance adjustments, reporting
+
+## Trading bot (added)
+
+Bots run strategies automatically in paper mode or on an OANDA account; see README. Next steps:
+- Short selling for bots (sell signal while flat opens a short)
+- Trailing stop-loss, position sizing by % of balance / risk per trade
+- Telegram or email alerts on every bot trade
+- Parameter sweep: backtest a grid of settings and rank them
+- Run the bot 24/7 on a small cloud server (it must stay on to act on signals)

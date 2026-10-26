@@ -5,6 +5,7 @@ import pytest
 
 _db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 os.environ["MONEYFX_DATABASE_URL"] = f"sqlite:///{_db.name}"
+os.environ["MONEYFX_BACKGROUND_WORKERS"] = "0"
 
 from fastapi.testclient import TestClient  # noqa: E402
 

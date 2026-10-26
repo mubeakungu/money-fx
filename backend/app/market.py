@@ -28,20 +28,27 @@ INSTRUMENTS = [
     ("WTIUSD", "WTI Crude Oil (bbl)", "commodity", "78", 0.02, 4.0, 2, 2, "0.01"),
 ]
 
-# Overlapping cycles from 90 seconds to ~11 days give movement at every chart zoom.
-_PERIODS = [90, 420, 2460, 18000, 172800, 950400]
-_AMPLITUDES = [0.05, 0.1, 0.2, 0.35, 0.5, 0.7]  # in units of the instrument's daily volatility
+# Fractal value noise: smooth random curves at 13 time scales (5 s to ~30 days), each
+# weighted by sqrt(scale) so the sum behaves like a random walk at every chart zoom, yet
+# the price at any moment can be computed directly without replaying history.
+_SCALES = [5 * 3**k for k in range(13)]
+_WEIGHTS = [math.sqrt(s / 86400) for s in _SCALES]
+_NORM = 1.0  # with these weights the daily move comes out close to the instrument's daily volatility
 DAY = 86400
+_M64 = (1 << 64) - 1
 
 
-def _seed(symbol: str, k: int) -> float:
-    h = hashlib.sha256(f"{symbol}:{k}".encode()).digest()
-    return int.from_bytes(h[:8], "big") / 2**64
+def _seed(symbol: str) -> int:
+    return int.from_bytes(hashlib.sha256(symbol.encode()).digest()[:8], "big")
 
 
-def _noise(symbol: str, bucket: int) -> float:
-    h = hashlib.blake2b(f"{symbol}:{bucket}".encode(), digest_size=8).digest()
-    return int.from_bytes(h, "big") / 2**63 - 1.0
+def _hash(seed: int, octave: int, i: int) -> float:
+    """splitmix64 of (seed, octave, i) mapped to [-1, 1]."""
+    z = (seed ^ (octave * 0x9E3779B97F4A7C15) ^ (i * 0xBF58476D1CE4E5B9)) & _M64
+    z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & _M64
+    z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & _M64
+    z ^= z >> 31
+    return z / 2**63 - 1.0
 
 
 class MockFeed:
@@ -49,19 +56,22 @@ class MockFeed:
         self._spec = {}
         for row in INSTRUMENTS:
             symbol, _, _, base, vol, spread, pdp, *_ = row
-            phases = [_seed(symbol, k) * 2 * math.pi for k in range(len(_PERIODS))]
-            self._spec[symbol] = (float(base), vol, spread, pdp, phases)
+            self._spec[symbol] = (float(base), vol, spread, pdp, _seed(symbol))
 
     def symbols(self):
         return list(self._spec)
 
     def price_at(self, symbol: str, t: float) -> float:
-        base, vol, _, _, phases = self._spec[symbol]
+        base, vol, _, _, seed = self._spec[symbol]
         x = 0.0
-        for period, amp, phase in zip(_PERIODS, _AMPLITUDES, phases):
-            x += amp * math.sin(2 * math.pi * t / period + phase)
-        x += 0.01 * _noise(symbol, int(t // 5))
-        return base * math.exp(vol * x)
+        for k, (scale, w) in enumerate(zip(_SCALES, _WEIGHTS)):
+            u = t / scale
+            i = math.floor(u)
+            f = u - i
+            f = f * f * (3 - 2 * f)
+            a, b = _hash(seed, k, i), _hash(seed, k, i + 1)
+            x += w * (a + (b - a) * f)
+        return base * math.exp(vol * _NORM * x)
 
     def _q(self, symbol: str, value: float) -> Decimal:
         dp = self._spec[symbol][3]
