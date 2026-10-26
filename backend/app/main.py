@@ -3,12 +3,16 @@ import logging
 from contextlib import asynccontextmanager
 from decimal import Decimal
 
-from fastapi import FastAPI
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
 from . import models
-from .config import BACKGROUND_WORKERS, CORS_ORIGINS
+from .config import BACKGROUND_WORKERS, CORS_ORIGINS, STATIC_DIR
 from .database import Base, SessionLocal, engine
 from .market import INSTRUMENTS
 from .bots import run_bots
@@ -75,3 +79,17 @@ for r in (auth, wallet, markets, orders, portfolio, bots):
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+# In production the built React app is served from the same origin as the API.
+if STATIC_DIR and Path(STATIC_DIR, "index.html").exists():
+    app.mount("/assets", StaticFiles(directory=Path(STATIC_DIR, "assets")), name="assets")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def spa(path: str):
+        if path.startswith("api/"):
+            raise HTTPException(404, "Not found")
+        file = Path(STATIC_DIR, path)
+        if path and file.is_file() and file.resolve().is_relative_to(Path(STATIC_DIR).resolve()):
+            return FileResponse(file)
+        return FileResponse(Path(STATIC_DIR, "index.html"))

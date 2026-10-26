@@ -11,11 +11,12 @@ const REASONS = { signal: 'Signal', stop_loss: 'Stop-loss', take_profit: 'Take-p
 export function BrokerBanner({ brokers }) {
   if (!brokers) return null
   const o = brokers.oanda
+  if (!o.allowed) return <div className="panel banner">Bots run in paper mode on simulated prices.</div>
   if (!o.configured) {
     return (
       <div className="panel banner">
         <strong>OANDA not connected.</strong> Bots run in paper mode on simulated prices. To trade your OANDA account, set{' '}
-        <code>OANDA_API_TOKEN</code>, <code>OANDA_ACCOUNT_ID</code> and <code>OANDA_ENV=practice</code> before starting the API (see README).
+        <code>OANDA_API_TOKEN</code>, <code>OANDA_ACCOUNT_ID</code> and <code>OANDA_ENV=practice</code> on the server and restart it (see README).
       </div>
     )
   }

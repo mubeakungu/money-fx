@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..bots import backtest, bot_log, record_close
 from ..brokers import OANDA_SYMBOLS, BrokerError, get_broker, oanda_configured
+from ..config import OANDA_OWNER_EMAILS
 from ..database import get_db
 from ..schemas import Dec, Out
 from ..security import get_account
@@ -77,7 +78,18 @@ class BotLogOut(Out):
     created_at: datetime
 
 
-def _check(db: Session, cfg: StrategyConfig) -> dict:
+def oanda_allowed(account: models.Account) -> bool:
+    return account.user.email.lower() in OANDA_OWNER_EMAILS
+
+
+def _require_oanda(account: models.Account):
+    if not oanda_allowed(account):
+        raise HTTPException(403, "OANDA trading is limited to the account owner (OANDA_OWNER_EMAILS)")
+
+
+def _check(db: Session, account: models.Account, cfg: StrategyConfig) -> dict:
+    if cfg.broker == "oanda":
+        _require_oanda(account)
     symbol = cfg.symbol.upper()
     if not db.scalars(select(models.Instrument).where(models.Instrument.symbol == symbol)).first():
         raise HTTPException(400, f"Unknown instrument {cfg.symbol}")
@@ -104,8 +116,9 @@ def strategies():
 
 @router.get("/brokers")
 def brokers(account: models.Account = Depends(get_account)):
-    oanda = {"configured": oanda_configured(), "environment": os.getenv("OANDA_ENV", "practice"),
-             "symbols": list(OANDA_SYMBOLS)}
+    allowed = oanda_allowed(account)
+    oanda = {"configured": oanda_configured() and allowed, "allowed": allowed,
+             "environment": os.getenv("OANDA_ENV", "practice"), "symbols": list(OANDA_SYMBOLS)}
     if oanda["configured"]:
         try:
             s = get_broker("oanda").summary()
@@ -117,7 +130,7 @@ def brokers(account: models.Account = Depends(get_account)):
 
 @router.post("/backtest")
 def run_backtest(body: BacktestIn, account: models.Account = Depends(get_account), db: Session = Depends(get_db)):
-    params = _check(db, body)
+    params = _check(db, account, body)
     symbol = body.symbol.upper()
     inst = db.scalars(select(models.Instrument).where(models.Instrument.symbol == symbol)).one()
     try:
@@ -139,7 +152,7 @@ def list_bots(account: models.Account = Depends(get_account), db: Session = Depe
 
 @router.post("", response_model=BotOut, status_code=201)
 def create_bot(body: BotIn, account: models.Account = Depends(get_account), db: Session = Depends(get_db)):
-    params = _check(db, body)
+    params = _check(db, account, body)
     bot = models.Bot(account_id=account.id, name=body.name.strip(), symbol=body.symbol.upper(), broker=body.broker,
                      strategy=body.strategy, params=params, interval=body.interval,
                      trade_size_usd=body.trade_size_usd, stop_loss_pct=body.stop_loss_pct,
@@ -175,6 +188,8 @@ def bot_detail(bot_id: int, account: models.Account = Depends(get_account), db: 
 @router.post("/{bot_id}/start", response_model=BotOut)
 def start(bot_id: int, account: models.Account = Depends(get_account), db: Session = Depends(get_db)):
     bot = _own(db, account, bot_id)
+    if bot.broker == "oanda":
+        _require_oanda(account)
     try:
         get_broker(bot.broker)
     except BrokerError as e:

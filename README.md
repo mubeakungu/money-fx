@@ -30,6 +30,38 @@ Open http://localhost:5173, create an account, deposit demo funds on the Wallet 
 
 Run the backend tests with `cd backend && pytest`.
 
+## Deploy (publish it online)
+
+The repo includes a `Dockerfile` that builds the React app and serves it together with the API
+from one container, and a `render.yaml` blueprint for one-click hosting on Render:
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/mubeakungu/money-fx)
+
+1. Click the button and sign in to Render with GitHub.
+2. Fill in the OANDA values when asked (leave them blank to run paper-only).
+   Set `OANDA_OWNER_EMAILS` to the email you will sign up with.
+3. Render builds the image and gives you a public `https://money-fx-xxxx.onrender.com` URL.
+
+The blueprint uses Render's Starter plan (about $7/month) because the bot must run 24/7 and the
+SQLite database needs a persistent disk. On the free plan the service sleeps when idle, so bots
+stop trading, and the data is wiped on every deploy.
+
+Any other Docker host works too (Railway, Fly.io, a VPS):
+
+```bash
+docker build -t money-fx .
+docker run -p 8000:8000 -v moneyfx-data:/data \
+  -e MONEYFX_ENV=production -e MONEYFX_SECRET_KEY=$(openssl rand -hex 32) \
+  -e OANDA_API_TOKEN=... -e OANDA_ACCOUNT_ID=... -e OANDA_OWNER_EMAILS=you@example.com \
+  money-fx
+```
+
+Run exactly one instance: the bot runner and the SQLite database live inside the container.
+
+**Who can do what on a public deployment.** Anyone can sign up and paper trade with fake money.
+Only the emails in `OANDA_OWNER_EMAILS` can see the OANDA account or create OANDA bots. If it is
+empty, nobody can. The server refuses to start in production without `MONEYFX_SECRET_KEY`.
+
 ## Trading bots
 
 Open the **Bots** page. Each bot trades one market with one strategy, holding at most one
@@ -65,6 +97,7 @@ every 2 seconds. If a bot hits 5 errors in a row (for example not enough funds),
 export OANDA_API_TOKEN=your-token
 export OANDA_ACCOUNT_ID=101-004-1234567-001
 export OANDA_ENV=practice          # change to "live" only when you are ready for real money
+export OANDA_OWNER_EMAILS=you@example.com   # the money fx login allowed to use OANDA
 uvicorn app.main:app
 ```
 
@@ -144,6 +177,9 @@ docs/schema.md     schema and trading rules
 | `MONEYFX_CORS_ORIGINS` | `http://localhost:5173` |
 | `OANDA_API_TOKEN`, `OANDA_ACCOUNT_ID` | unset (OANDA disabled) |
 | `OANDA_ENV` | `practice` (`live` for real money) |
+| `OANDA_OWNER_EMAILS` | unset: comma-separated logins allowed to trade on OANDA |
+| `MONEYFX_ENV` | unset; `production` requires a real secret key |
+| `MONEYFX_STATIC_DIR` | unset; path of the built frontend to serve (the Dockerfile sets it) |
 
 ## Not built yet
 

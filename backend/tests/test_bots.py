@@ -149,7 +149,27 @@ def test_bot_errors_stop_after_retries(client, user):
     assert engine.MAX_CONSECUTIVE_ERRORS == 5
 
 
-def test_oanda_validation(client, user):
+@pytest.fixture
+def owner(client, user, monkeypatch):
+    """Make the test user the OANDA account owner."""
+    from app.routers import bots as bots_router
+    email = client.get("/api/auth/me", headers=user).json()["email"]
+    monkeypatch.setattr(bots_router, "OANDA_OWNER_EMAILS", {email})
+    return user
+
+
+def test_oanda_is_owner_only(client, user):
+    r = client.post("/api/bots", json={"name": "x", "symbol": "EURUSD", "broker": "oanda", "strategy": "rsi",
+                                       "trade_size_usd": "100"}, headers=user)
+    assert r.status_code == 403
+    r = client.post("/api/bots/backtest", json={"symbol": "EURUSD", "broker": "oanda", "strategy": "rsi",
+                                                "trade_size_usd": "100"}, headers=user)
+    assert r.status_code == 403
+    assert client.get("/api/bots/brokers", headers=user).json()["oanda"]["allowed"] is False
+
+
+def test_oanda_validation(client, owner):
+    user = owner
     r = client.post("/api/bots", json={"name": "x", "symbol": "BTCUSD", "broker": "oanda", "strategy": "rsi",
                                        "trade_size_usd": "100"}, headers=user)
     assert r.status_code == 400 and "OANDA bots can trade" in r.json()["detail"]
@@ -202,7 +222,8 @@ def oanda():
     brokers.set_oanda_broker(None)
 
 
-def test_oanda_broker(client, user, oanda, monkeypatch):
+def test_oanda_broker(client, owner, oanda, monkeypatch):
+    user = owner
     b = brokers.get_broker("oanda")
     candles = b.closed_candles("EURUSD", "1m", 300)
     assert len(candles) == 3 and candles[-1]["time"] == 1120
