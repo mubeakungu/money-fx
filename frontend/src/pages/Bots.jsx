@@ -149,8 +149,12 @@ function Stat({ label, value, sub, cls = '' }) {
 
 export function BotCard({ bot, strategies, onChange }) {
   const strat = strategies.find((s) => s.key === bot.strategy)
+  const [confirming, setConfirming] = useState(false)
+  const [err, setErr] = useState(null)
   const act = async (path, method = 'POST') => {
-    try { await api(`/bots/${bot.id}${path}`, { method }) } catch (e) { alert(e.message) }
+    setErr(null)
+    try { await api(`/bots/${bot.id}${path}`, { method }) } catch (e) { setErr(e.message) }
+    setConfirming(false)
     onChange()
   }
   const winRate = bot.trades_closed ? Math.round((bot.wins / bot.trades_closed) * 100) : null
@@ -169,16 +173,16 @@ export function BotCard({ bot, strategies, onChange }) {
         <dt>Closed trades</dt><dd className="mono">{bot.trades_closed}{winRate !== null && ` · ${winRate}% wins`}</dd>
         <dt>Risk</dt><dd className="mono">{usd(bot.trade_size_usd, { maximumFractionDigits: 0 })} · SL {bot.stop_loss_pct ?? '—'}% · TP {bot.take_profit_pct ?? '—'}%</dd>
       </dl>
-      {bot.error && <div className="notice err">{bot.error}</div>}
+      {(err || bot.error) && <div className="notice err">{err || bot.error}</div>}
       <div className="actions">
         {bot.status === 'running'
           ? <button className="btn ghost sm" onClick={() => act('/stop')}>Stop</button>
           : <button className="btn sm" onClick={() => act('/start')}>Start</button>}
         {Number(bot.position_qty) > 0 && <button className="btn ghost sm" onClick={() => act('/close-position')}>Close position</button>}
         <Link className="btn ghost sm" to={`/bots/${bot.id}`}>Activity</Link>
-        {bot.status !== 'running' && !Number(bot.position_qty) && (
-          <button className="btn ghost sm danger" onClick={() => confirm(`Delete ${bot.name}?`) && act('', 'DELETE')}>Delete</button>
-        )}
+        {bot.status !== 'running' && !Number(bot.position_qty) && (confirming
+          ? <button className="btn ghost sm danger" onClick={() => act('', 'DELETE')}>Confirm delete</button>
+          : <button className="btn ghost sm danger" onClick={() => setConfirming(true)}>Delete</button>)}
       </div>
     </div>
   )

@@ -1,7 +1,16 @@
 const TOKEN_KEY = 'moneyfx_token'
 
-export const getToken = () => localStorage.getItem(TOKEN_KEY)
-export const setToken = (t) => (t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY))
+// The published demo build (VITE_DEMO=1) has no server: requests go to an in-browser copy of the API.
+export const DEMO = import.meta.env.VITE_DEMO === '1'
+const demoServer = DEMO ? import('./demo/server') : null
+
+export const getToken = () => {
+  if (DEMO) return 'demo'
+  try { return localStorage.getItem(TOKEN_KEY) } catch { return null }
+}
+export const setToken = (t) => {
+  try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY) } catch { /* storage blocked */ }
+}
 
 export class ApiError extends Error {
   constructor(status, message) {
@@ -11,6 +20,13 @@ export class ApiError extends Error {
 }
 
 export async function api(path, { method = 'GET', body } = {}) {
+  if (DEMO) {
+    try {
+      return await (await demoServer).handle(method, path, body)
+    } catch (e) {
+      throw new ApiError(e.status ?? 400, e.message)
+    }
+  }
   const headers = { 'Content-Type': 'application/json' }
   const token = getToken()
   if (token) headers.Authorization = `Bearer ${token}`
