@@ -4,6 +4,7 @@ import { api } from '../api'
 import EquityChart from '../components/EquityChart'
 import { num, pct, signClass, usd } from '../format'
 import { useQuotes } from '../quotes'
+import { useAccountMode } from '../account'
 
 const INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1d']
 const REASONS = { signal: 'Signal', stop_loss: 'Stop-loss', take_profit: 'Take-profit', manual: 'Manual', closed_on_oanda: 'Closed on OANDA' }
@@ -31,9 +32,13 @@ export function BrokerBanner({ brokers }) {
 }
 
 function BotForm({ strategies, brokers, onBacktest, onCreated }) {
-  const { instruments } = useQuotes()
+  const { instruments: shown } = useQuotes()
+  const [all, setAll] = useState([])
+  const realMode = useAccountMode().mode === 'real'
+  useEffect(() => { api('/markets/instruments').then(setAll).catch(() => {}) }, [])
+  const instruments = all.length ? all : shown
   const [f, setF] = useState({
-    name: '', broker: 'paper', symbol: 'EURUSD', strategy: 'sma_cross', interval: '5m',
+    name: '', broker: realMode ? 'oanda' : 'paper', symbol: 'EURUSD', strategy: 'sma_cross', interval: '5m',
     trade_size_usd: '1000', stop_loss_pct: '1', take_profit_pct: '2', bars: '1000',
   })
   const [params, setParams] = useState({})
