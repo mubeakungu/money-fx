@@ -30,6 +30,12 @@ Open http://localhost:5173, create an account, deposit demo funds on the Wallet 
 
 Run the backend tests with `cd backend && pytest`.
 
+## Browser demo
+
+`cd frontend && npm run build:demo` builds a self-contained demo, `frontend/dist-demo/money-fx-demo.html`.
+It runs the whole API inside the page (`frontend/src/demo/`), so it needs no server: simulated prices,
+$10,000 of fake money, paper trading and bots (which run only while the page is open). No OANDA.
+
 ## Deploy (publish it online)
 
 The repo includes a `Dockerfile` that builds the React app and serves it together with the API

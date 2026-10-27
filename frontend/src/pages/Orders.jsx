@@ -3,13 +3,16 @@ import { api } from '../api'
 import { dateTime, num } from '../format'
 
 export function OrdersTable({ orders, onChange, compact }) {
+  const [err, setErr] = useState(null)
   const cancel = async (id) => {
-    await api(`/orders/${id}`, { method: 'DELETE' }).catch((e) => alert(e.message))
+    setErr(null)
+    await api(`/orders/${id}`, { method: 'DELETE' }).catch((e) => setErr(e.message))
     onChange?.()
   }
   if (!orders.length) return <p className="muted">No orders yet.</p>
   return (
     <div className="table-wrap">
+      {err && <div className="notice err">{err}</div>}
       <table>
         <thead>
           <tr>

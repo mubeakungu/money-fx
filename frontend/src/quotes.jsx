@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import { api } from './api'
+import { DEMO, api } from './api'
 
 const QuotesContext = createContext({ quotes: {}, instruments: [], connected: false })
 
@@ -14,6 +14,19 @@ export function QuotesProvider({ children }) {
   }, [])
 
   useEffect(() => {
+    if (!DEMO) return
+    let timer
+    import('./demo/feed').then(({ INSTRUMENTS, quoteJson }) => {
+      const push = () => setQuotes(Object.fromEntries(INSTRUMENTS.map((i) => [i.symbol, quoteJson(i.symbol)])))
+      push()
+      setConnected(true)
+      timer = setInterval(push, 1000)
+    })
+    return () => clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    if (DEMO) return
     let ws
     let retry
     let closed = false
