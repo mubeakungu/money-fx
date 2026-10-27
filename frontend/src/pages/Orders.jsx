@@ -1,3 +1,5 @@
+import { useAccountMode } from '../account'
+import { RealOrders } from '../real/RealPages'
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { dateTime, num } from '../format'
@@ -41,6 +43,10 @@ export function OrdersTable({ orders, onChange, compact }) {
 }
 
 export default function Orders() {
+  return useAccountMode().mode === 'real' ? <RealOrders /> : <DemoOrders />
+}
+
+function DemoOrders() {
   const [orders, setOrders] = useState([])
   const [status, setStatus] = useState('')
   const load = () => api(`/orders?limit=200${status ? `&status=${status}` : ''}`).then(setOrders)

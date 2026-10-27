@@ -96,12 +96,12 @@ class OandaBroker:
     name = "oanda"
     symbols = list(OANDA_SYMBOLS)
 
-    def __init__(self, token: str, account_id: str, env: str = "practice", transport=None):
+    def __init__(self, token: str, account_id: str, env: str = "practice", transport=None, base_url: str | None = None):
         if env not in OANDA_HOSTS:
             raise BrokerError("OANDA_ENV must be 'practice' or 'live'")
         self.env = env
         self.account_id = account_id
-        self.http = httpx.Client(base_url=OANDA_HOSTS[env], timeout=15, transport=transport, headers={
+        self.http = httpx.Client(base_url=base_url or OANDA_HOSTS[env], timeout=15, transport=transport, headers={
             "Authorization": f"Bearer {token}", "Accept-Datetime-Format": "UNIX"})
         self._instruments: dict | None = None
 
@@ -204,6 +204,96 @@ class OandaBroker:
                     external_id=bot.external_trade_id, reason=reason)
 
 
+    # ---- Manual trading on the real account (the "Real" side of the app) ----
+
+    @staticmethod
+    def symbol_of(instrument: str) -> str | None:
+        return OANDA_REVERSE.get(instrument)
+
+    def chart_candles(self, symbol: str, interval: str, limit: int) -> list[dict]:
+        """Candles for the chart, including the one still forming."""
+        data = self._req("GET", f"/v3/instruments/{self.instrument(symbol)}/candles",
+                         params={"granularity": OANDA_GRANULARITY[interval], "count": min(limit, 5000), "price": "M"})
+        return [{"time": int(float(c["time"])), "open": float(c["mid"]["o"]), "high": float(c["mid"]["h"]),
+                 "low": float(c["mid"]["l"]), "close": float(c["mid"]["c"])} for c in data["candles"]]
+
+    def prices(self) -> list[dict]:
+        names = [OANDA_SYMBOLS[s] for s in OANDA_SYMBOLS if OANDA_SYMBOLS[s] in self.instruments()]
+        data = self._req("GET", self._acct("/pricing"), params={"instruments": ",".join(names)})
+        out = []
+        for p in data["prices"]:
+            bid, ask = Decimal(p["bids"][0]["price"]), Decimal(p["asks"][0]["price"])
+            out.append({"symbol": self.symbol_of(p["instrument"]), "bid": str(bid), "ask": str(ask),
+                        "mid": str(((bid + ask) / 2).quantize(bid)), "tradeable": p.get("status", "tradeable") == "tradeable",
+                        "ts": int(float(p.get("time", 0)) * 1000)})
+        return out
+
+    def _trade_out(self, t: dict) -> dict:
+        units = Decimal(t["currentUnits"] if t["state"] == "OPEN" else t["initialUnits"])
+        return {"id": t["id"], "symbol": self.symbol_of(t["instrument"]) or t["instrument"],
+                "side": "buy" if Decimal(t["initialUnits"]) > 0 else "sell", "units": str(abs(units)),
+                "open_price": t["price"], "close_price": t.get("averageClosePrice"), "state": t["state"],
+                "unrealized_pnl": t.get("unrealizedPL"), "realized_pnl": t.get("realizedPL"),
+                "stop_loss": (t.get("stopLossOrder") or {}).get("price"),
+                "take_profit": (t.get("takeProfitOrder") or {}).get("price"),
+                "opened_at": t.get("openTime"), "closed_at": t.get("closeTime")}
+
+    def open_trades(self) -> list[dict]:
+        return [self._trade_out(t) for t in self._req("GET", self._acct("/openTrades"))["trades"]]
+
+    def closed_trades(self, count: int = 50) -> list[dict]:
+        data = self._req("GET", self._acct("/trades"), params={"state": "CLOSED", "count": count})
+        return [self._trade_out(t) for t in data["trades"]]
+
+    def pending_orders(self) -> list[dict]:
+        out = []
+        for o in self._req("GET", self._acct("/pendingOrders"))["orders"]:
+            if o.get("type") not in ("LIMIT", "STOP", "MARKET_IF_TOUCHED"):
+                continue  # stop-loss / take-profit orders attached to trades show on the trade itself
+            units = Decimal(o["units"])
+            out.append({"id": o["id"], "symbol": self.symbol_of(o["instrument"]) or o["instrument"],
+                        "side": "buy" if units > 0 else "sell", "units": str(abs(units)), "type": o["type"].lower(),
+                        "price": o.get("price"), "created_at": o.get("createTime")})
+        return out
+
+    def place(self, symbol: str, side: str, units: Decimal, type_: str = "market", price: Decimal | None = None,
+              stop_loss_pct: float | None = None, take_profit_pct: float | None = None) -> dict:
+        """Market or limit order. Sell opens a short if you hold nothing (OANDA nets positions)."""
+        spec = self._spec(symbol)
+        units = units.quantize(Decimal(1).scaleb(-int(spec["tradeUnitsPrecision"])), rounding=ROUND_DOWN)
+        if units < Decimal(spec["minimumTradeSize"]):
+            raise BrokerError(f"OANDA minimum for {symbol} is {spec['minimumTradeSize']} units")
+        sign = 1 if side == "buy" else -1
+        ref = price if type_ == "limit" else self.quote(symbol)["ask" if side == "buy" else "bid"]
+        order = {"type": "MARKET" if type_ == "market" else "LIMIT", "instrument": self.instrument(symbol),
+                 "units": str(units * sign), "positionFill": "DEFAULT",
+                 "timeInForce": "FOK" if type_ == "market" else "GTC"}
+        if type_ == "limit":
+            order["price"] = self._price_str(symbol, price)
+        if stop_loss_pct:
+            order["stopLossOnFill"] = {"price": self._price_str(symbol, ref * (1 - sign * Decimal(str(stop_loss_pct)) / 100))}
+        if take_profit_pct:
+            order["takeProfitOnFill"] = {"price": self._price_str(symbol, ref * (1 + sign * Decimal(str(take_profit_pct)) / 100))}
+        data = self._req("POST", self._acct("/orders"), json={"order": order})
+        if fill := data.get("orderFillTransaction"):
+            return {"status": "filled", "price": fill.get("price"), "units": str(abs(Decimal(fill.get("units", units)))),
+                    "trade_id": (fill.get("tradeOpened") or {}).get("tradeID"), "pl": fill.get("pl")}
+        if cancel := data.get("orderCancelTransaction"):
+            raise BrokerError(f"OANDA cancelled the order: {cancel.get('reason', 'unknown reason')}")
+        created = data.get("orderCreateTransaction") or {}
+        return {"status": "pending", "order_id": created.get("id"), "price": order.get("price"), "units": str(units)}
+
+    def cancel_order(self, order_id: str):
+        self._req("PUT", self._acct(f"/orders/{order_id}/cancel"))
+
+    def close_trade(self, trade_id: str) -> dict:
+        fill = self._req("PUT", self._acct(f"/trades/{trade_id}/close"), json={"units": "ALL"}).get("orderFillTransaction")
+        if not fill:
+            raise BrokerError("OANDA did not close the trade")
+        return {"price": fill["price"], "pl": fill.get("pl")}
+
+
+OANDA_REVERSE = {v: k for k, v in OANDA_SYMBOLS.items()}
 _paper = PaperBroker()
 _oanda: OandaBroker | None = None
 
@@ -222,7 +312,7 @@ def get_broker(name: str):
         if not oanda_configured():
             raise BrokerError("OANDA is not connected. Set OANDA_API_TOKEN and OANDA_ACCOUNT_ID and restart the API.")
         _oanda = OandaBroker(os.environ["OANDA_API_TOKEN"], os.environ["OANDA_ACCOUNT_ID"],
-                             os.getenv("OANDA_ENV", "practice"))
+                             os.getenv("OANDA_ENV", "practice"), base_url=os.getenv("OANDA_BASE_URL"))
         return _oanda
     raise BrokerError(f"Unknown broker {name}")
 

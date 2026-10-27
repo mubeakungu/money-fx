@@ -16,7 +16,7 @@ from .config import BACKGROUND_WORKERS, CORS_ORIGINS, STATIC_DIR
 from .database import Base, SessionLocal, engine
 from .market import INSTRUMENTS
 from .bots import run_bots
-from .routers import auth, bots, markets, orders, portfolio, wallet
+from .routers import auth, bots, markets, orders, portfolio, real, wallet
 from .trading import match_open_orders
 
 log = logging.getLogger("moneyfx")
@@ -72,7 +72,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="money fx API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
-for r in (auth, wallet, markets, orders, portfolio, bots):
+for r in (auth, wallet, markets, orders, portfolio, bots, real):
     app.include_router(r.router)
 
 

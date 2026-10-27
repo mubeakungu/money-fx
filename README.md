@@ -70,6 +70,28 @@ Run exactly one instance: the bot runner and the SQLite database live inside the
 Only the emails in `OANDA_OWNER_EMAILS` can see the OANDA account or create OANDA bots. If it is
 empty, nobody can. The server refuses to start in production without `MONEYFX_SECRET_KEY`.
 
+## Demo and Real accounts
+
+When OANDA is connected and you are logged in as an owner (`OANDA_OWNER_EMAILS`), the top bar shows a
+**Demo / Real** switch:
+
+- **Demo**: the money fx simulated account with fake money (everything described above).
+- **Real**: your OANDA account. Trade by hand on OANDA prices and charts, buy or sell short, attach a
+  stop-loss and take-profit, and confirm every order in a second step. Portfolio, Orders and Wallet show your
+  OANDA balance, open positions (with Close buttons), pending limit orders and closed trades. Positions
+  opened by your bots show the bot's name. Deposits and withdrawals happen on OANDA itself.
+
+A blue bar means OANDA practice; it turns red when `OANDA_ENV=live` and orders use real money.
+
+To try the Real side without an OANDA login, run the fake OANDA server used by the tests:
+
+```bash
+cd backend
+uvicorn tests.fake_oanda:app --port 8099 &
+OANDA_BASE_URL=http://localhost:8099 OANDA_API_TOKEN=x OANDA_ACCOUNT_ID=001 \
+  OANDA_OWNER_EMAILS=you@example.com uvicorn app.main:app
+```
+
 ## Trading bots
 
 Open the **Bots** page. Each bot trades one market with one strategy, holding at most one
@@ -150,6 +172,9 @@ Notes for live use:
 | GET | `/api/portfolio` | |
 | GET | `/api/bots/strategies`, `/api/bots/brokers` | Strategy list, OANDA connection status |
 | POST | `/api/bots/backtest` | Strategy config plus `bars`, `capital` |
+| GET | `/api/real/account`, `/api/real/instruments`, `/api/real/prices`, `/api/real/candles/{symbol}` | Real (OANDA) account, owner only |
+| GET / POST | `/api/real/orders`, `DELETE /api/real/orders/{id}` | Pending orders, place market/limit order, cancel |
+| GET | `/api/real/trades?state=open\|closed`, `POST /api/real/trades/{id}/close` | Positions and history |
 | GET / POST | `/api/bots` | List or create bots |
 | GET / DELETE | `/api/bots/{id}` | Bot with trades and activity log |
 | POST | `/api/bots/{id}/start`, `/stop`, `/close-position` | |

@@ -1,6 +1,7 @@
 import { CandlestickSeries, ColorType, createChart } from 'lightweight-charts'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
+import { useAccountMode } from '../account'
 import { useQuotes } from '../quotes'
 
 const INTERVALS = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 }
@@ -12,6 +13,7 @@ export default function PriceChart({ instrument }) {
   const [interval, setInterval_] = useState('1m')
   const { quotes } = useQuotes()
   const symbol = instrument?.symbol
+  const real = useAccountMode().mode === 'real'
 
   useEffect(() => {
     if (!el.current || !instrument) return
@@ -29,7 +31,7 @@ export default function PriceChart({ instrument }) {
       priceFormat: { type: 'price', precision: instrument.price_decimals, minMove: 10 ** -instrument.price_decimals },
     })
     let cancelled = false
-    api(`/markets/candles/${symbol}?interval=${interval}&limit=300`).then((bars) => {
+    api(`${real ? '/real' : '/markets'}/candles/${symbol}?interval=${interval}&limit=300`).then((bars) => {
       if (cancelled) return
       series.current.setData(bars)
       last.current = { ...bars[bars.length - 1] }
@@ -41,12 +43,12 @@ export default function PriceChart({ instrument }) {
       series.current = null
       chart.remove()
     }
-  }, [symbol, interval, instrument])
+  }, [symbol, interval, instrument, real])
 
   // Fold each live tick into the current candle, or open a new one.
   const q = quotes[symbol]
   useEffect(() => {
-    if (!q || !series.current || !last.current) return
+    if (!q?.ts || !series.current || !last.current) return
     const price = Number(q.mid)
     const step = INTERVALS[interval]
     const t = Math.floor(q.ts / 1000 / step) * step

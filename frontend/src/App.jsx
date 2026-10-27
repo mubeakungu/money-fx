@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
+import { AccountModeProvider } from './account'
 import { useAuth } from './auth'
 import Layout from './components/Layout'
 import { QuotesProvider } from './quotes'
@@ -15,7 +16,7 @@ function Protected({ children }) {
   const { user, loading } = useAuth()
   if (loading) return <div className="center muted">Loading…</div>
   if (!user) return <Navigate to="/login" replace />
-  return <QuotesProvider><Layout>{children}</Layout></QuotesProvider>
+  return <AccountModeProvider><QuotesProvider><Layout>{children}</Layout></QuotesProvider></AccountModeProvider>
 }
 
 export default function App() {
