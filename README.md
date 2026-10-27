@@ -46,7 +46,9 @@ from one container, and a `render.yaml` blueprint for one-click hosting on Rende
 1. Click the button and sign in to Render with GitHub.
 2. Fill in the OANDA values when asked (leave them blank to run paper-only).
    Set `OANDA_OWNER_EMAILS` to the email you will sign up with.
-3. Render builds the image and gives you a public `https://money-fx-xxxx.onrender.com` URL.
+3. Render creates two services and gives each a public URL:
+   - **money-fx**: the full app with bots and OANDA, at `https://money-fx-xxxx.onrender.com`
+   - **money-fx-demo**: the browser demo anyone can try, at `https://money-fx-demo-xxxx.onrender.com` (free static site)
 
 The blueprint uses Render's Starter plan (about $7/month) because the bot must run 24/7 and the
 SQLite database needs a persistent disk. On the free plan the service sleeps when idle, so bots

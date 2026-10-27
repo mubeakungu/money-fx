@@ -1,6 +1,7 @@
 # One-click deploy on Render: https://render.com/deploy?repo=https://github.com/mubeakungu/money-fx
-# Runs as a single instance: the bot runner and SQLite database live in this one container.
+# Two services: the full app (paid, runs 24/7 with your OANDA account) and the public demo (free static site).
 services:
+  # Full app. Runs as a single instance: the bot runner and SQLite database live in this one container.
   - type: web
     name: money-fx
     runtime: docker
@@ -26,3 +27,10 @@ services:
         sync: false
       - key: OANDA_OWNER_EMAILS
         sync: false
+
+  # Browser demo: simulated prices and fake money, no server or OANDA. Free.
+  - type: web
+    name: money-fx-demo
+    runtime: static
+    buildCommand: cd frontend && npm ci && npm run build:demo
+    staticPublishPath: ./frontend/dist-demo
