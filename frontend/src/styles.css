@@ -189,7 +189,7 @@ a.btn:hover { text-decoration: none; }
   .topbar .brand { display: none; }
   .hide-sm { display: none; }
   .topbar nav a { padding: 8px; }
-  .trade-grid, .wallet-grid, .detail-grid { grid-template-columns: 1fr; }
+  .trade-grid, .wallet-grid, .detail-grid { grid-template-columns: minmax(0, 1fr); }
   .form-grid { grid-template-columns: 1fr 1fr; }
   .ticket { position: static; order: 2; }
   .trade-main { order: 3; }
@@ -202,3 +202,10 @@ a.btn:hover { text-decoration: none; }
 .safety-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .safety-row input { width: 120px; }
 .safety .notice { flex-basis: 100%; }
+.seg.studies button { text-transform: none; display: inline-flex; align-items: center; gap: 5px; }
+.seg .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.chart-head .seg.studies { margin-left: auto; }
+.legend { display: inline-flex; flex-wrap: wrap; gap: 4px 14px; }
+.legend > span { display: inline-flex; align-items: center; gap: 5px; }
+.legend .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.bot-chart { height: 380px; }

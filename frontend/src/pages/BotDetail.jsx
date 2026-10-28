@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../api'
+import BotChart from '../components/BotChart'
 import { dateTime, num, signClass, usd } from '../format'
 import { BotCard, REASONS, tradeLabel } from './Bots'
 
@@ -53,6 +54,7 @@ export default function BotDetail() {
           )}
         </div>
       </div>
+      <BotChart bot={d.bot} trades={d.trades} />
       <div className="panel">
         <h3>Activity</h3>
         <ul className="log">
