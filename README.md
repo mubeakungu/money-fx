@@ -127,6 +127,16 @@ settles its profit or loss when it closes.
 The bot checks once per closed candle (it never acts on a half-formed candle) and watches stops
 every 2 seconds. If a bot hits 5 errors in a row (for example not enough funds), it stops itself.
 
+### Telegram alerts
+
+Get a Telegram message whenever a bot opens or closes a trade, hits the daily loss limit, or stops on errors.
+
+1. In Telegram, message **@BotFather**, send `/newbot` and follow the steps. It gives you a bot token.
+2. Set `TELEGRAM_BOT_TOKEN` to that token on the server (on Render: your service → Environment) and redeploy.
+3. On the Bots page press **Connect Telegram**, press **Start** in the chat that opens, then **I pressed Start**.
+
+Each user links their own chat, so alerts about a user's bots only go to that user.
+
 ### Connect OANDA
 
 1. Open a free **practice** account at oanda.com (fxTrade Practice).
@@ -183,7 +193,8 @@ Notes for live use:
 | GET | `/api/portfolio` | |
 | GET | `/api/bots/strategies`, `/api/bots/brokers` | Strategy list, OANDA connection status |
 | POST | `/api/bots/backtest` | Strategy config plus `bars`, `capital` |
-| GET / PUT | `/api/bots/settings` | Daily loss limit for all bots, and today's bot P&L |
+| GET / PUT | `/api/bots/settings` | Daily loss limit for all bots, today's bot P&L, Telegram status |
+| POST | `/api/bots/telegram/link`, `/verify`, `/test`; DELETE `/api/bots/telegram` | Link, test or unlink Telegram alerts |
 | GET | `/api/real/account`, `/api/real/instruments`, `/api/real/prices`, `/api/real/candles/{symbol}` | Real (OANDA) account, owner only |
 | GET / POST | `/api/real/orders`, `DELETE /api/real/orders/{id}` | Pending orders, place market/limit order, cancel |
 | GET | `/api/real/trades?state=open\|closed`, `POST /api/real/trades/{id}/close` | Positions and history |
@@ -223,6 +234,7 @@ docs/schema.md     schema and trading rules
 | `OANDA_API_TOKEN`, `OANDA_ACCOUNT_ID` | unset (OANDA disabled) |
 | `OANDA_ENV` | `practice` (`live` for real money) |
 | `OANDA_OWNER_EMAILS` | unset: comma-separated logins allowed to trade on OANDA |
+| `TELEGRAM_BOT_TOKEN` | unset (Telegram alerts off); token from @BotFather |
 | `MONEYFX_ENV` | unset; `production` requires a real secret key |
 | `MONEYFX_STATIC_DIR` | unset; path of the built frontend to serve (the Dockerfile sets it) |
 

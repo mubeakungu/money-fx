@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api } from '../api'
+import { DEMO, api } from '../api'
 import EquityChart from '../components/EquityChart'
 import { num, pct, signClass, usd } from '../format'
 import { useQuotes } from '../quotes'
@@ -202,6 +202,7 @@ function SafetyPanel() {
   if (!s) return null
   const hit = s.daily_loss_limit_usd && Number(s.today_pnl_usd) <= -Number(s.daily_loss_limit_usd)
   return (
+    <>
     <form className="panel safety" onSubmit={save}>
       <div>
         <h3>Daily loss limit</h3>
@@ -215,6 +216,67 @@ function SafetyPanel() {
       </div>
       {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`}>{msg.text}</div>}
     </form>
+    <TelegramPanel tg={s.telegram} onChange={setS} />
+    </>
+  )
+}
+
+function TelegramPanel({ tg, onChange }) {
+  const [link, setLink] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState(null)
+  if (!tg) return null
+  const call = async (path, method, after, onError) => {
+    setBusy(true)
+    setMsg(null)
+    try {
+      const r = await api(`/bots/telegram${path}`, { method })
+      after(r)
+    } catch (e) {
+      setMsg({ ok: false, text: e.message })
+      onError?.()
+    } finally {
+      setBusy(false)
+    }
+  }
+  const connect = () => {
+    // Open the tab right away (inside the click) so pop-up blockers allow it, then point it at the bot
+    const tab = window.open('', '_blank')
+    call('/link', 'POST', (r) => {
+      setLink(r)
+      if (tab) tab.location.href = r.url
+    }, () => tab?.close())
+  }
+  let body
+  if (DEMO || !tg.available) {
+    body = <p className="muted xs">{DEMO ? 'Not available in the browser demo.' : <>Not set up on this server yet. Create a bot with @BotFather in Telegram and set <code>TELEGRAM_BOT_TOKEN</code> on the server (see README).</>}</p>
+  } else if (tg.connected) {
+    body = (
+      <div className="safety-row">
+        <span className="pill filled">connected</span>
+        <button className="btn ghost sm" disabled={busy} onClick={() => call('/test', 'POST', () => setMsg({ ok: true, text: 'Test message sent. Check Telegram.' }))}>Send test</button>
+        <button className="btn ghost sm danger" disabled={busy} onClick={() => call('', 'DELETE', (r) => { onChange(r); setLink(null) })}>Disconnect</button>
+      </div>
+    )
+  } else if (link) {
+    body = (
+      <div className="safety-row">
+        <span className="muted xs">In Telegram, press <b>Start</b> in the chat with @{link.bot} (<a href={link.url} target="_blank" rel="noreferrer">open it</a>), then:</span>
+        <button className="btn sm" disabled={busy} onClick={() => call('/verify', 'POST', (r) => { onChange(r); setMsg({ ok: true, text: 'Connected. Check Telegram for a welcome message.' }) })}>I pressed Start</button>
+      </div>
+    )
+  } else {
+    body = <div className="safety-row"><button className="btn sm" disabled={busy} onClick={connect}>Connect Telegram</button></div>
+  }
+  return (
+    <div className="panel safety">
+      <div>
+        <h3>Telegram alerts</h3>
+        <p className="muted xs">Get a message whenever one of your bots opens or closes a trade, hits the daily loss limit, or stops on errors.</p>
+      </div>
+      {body}
+      {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`}>{msg.text}</div>}
+    </div>
   )
 }
 

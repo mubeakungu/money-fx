@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..alerts import TelegramError, new_link_code, send_pending, telegram
 from ..bots import backtest, bot_log, record_close, todays_bot_pnl
 from ..brokers import OANDA_SYMBOLS, BrokerError, get_broker, oanda_configured
 from ..config import OANDA_OWNER_EMAILS
@@ -143,7 +144,15 @@ class BotSettings(BaseModel):
 def _settings(db: Session, account: models.Account) -> dict:
     limit = account.bot_daily_loss_limit
     return {"daily_loss_limit_usd": None if limit is None else format(limit.normalize(), "f"),
-            "today_pnl_usd": format(todays_bot_pnl(db, account.id).quantize(Decimal("0.01")), "f")}
+            "today_pnl_usd": format(todays_bot_pnl(db, account.id).quantize(Decimal("0.01")), "f"),
+            "telegram": {"available": telegram() is not None, "connected": bool(account.telegram_chat_id)}}
+
+
+def _telegram():
+    client = telegram()
+    if client is None:
+        raise HTTPException(400, "Telegram alerts are not set up on this server. Set TELEGRAM_BOT_TOKEN (see README).")
+    return client
 
 
 @router.get("/settings")
@@ -154,6 +163,58 @@ def get_settings(account: models.Account = Depends(get_account), db: Session = D
 @router.put("/settings")
 def put_settings(body: BotSettings, account: models.Account = Depends(get_account), db: Session = Depends(get_db)):
     account.bot_daily_loss_limit = body.daily_loss_limit_usd
+    db.commit()
+    return _settings(db, account)
+
+
+@router.post("/telegram/link")
+def telegram_link(account: models.Account = Depends(get_account), db: Session = Depends(get_db)):
+    """Start linking: the user opens the returned t.me link and presses Start, which sends the code to the bot."""
+    client = _telegram()
+    try:
+        username = client.username()
+    except TelegramError as e:
+        raise HTTPException(400, str(e))
+    account.telegram_link_code = new_link_code()
+    db.commit()
+    return {"url": f"https://t.me/{username}?start={account.telegram_link_code}", "bot": username,
+            "code": account.telegram_link_code}
+
+
+@router.post("/telegram/verify")
+def telegram_verify(account: models.Account = Depends(get_account), db: Session = Depends(get_db)):
+    client = _telegram()
+    if not account.telegram_link_code:
+        raise HTTPException(400, "Press Connect Telegram first")
+    try:
+        chat = client.find_chat(account.telegram_link_code)
+        if chat is None:
+            raise HTTPException(400, "No message from you yet. Open the link, press Start in Telegram, then try again.")
+        client.send(chat, "money fx is connected. You'll get a message here whenever one of your bots trades or stops.")
+    except TelegramError as e:
+        raise HTTPException(400, str(e))
+    account.telegram_chat_id = chat
+    account.telegram_link_code = None
+    db.commit()
+    return _settings(db, account)
+
+
+@router.post("/telegram/test")
+def telegram_test(account: models.Account = Depends(get_account)):
+    client = _telegram()
+    if not account.telegram_chat_id:
+        raise HTTPException(400, "Telegram is not connected")
+    try:
+        client.send(account.telegram_chat_id, "Test alert from money fx. Bot alerts are working.")
+    except TelegramError as e:
+        raise HTTPException(400, str(e))
+    return {"sent": True}
+
+
+@router.delete("/telegram")
+def telegram_disconnect(account: models.Account = Depends(get_account), db: Session = Depends(get_db)):
+    account.telegram_chat_id = None
+    account.telegram_link_code = None
     db.commit()
     return _settings(db, account)
 
@@ -260,6 +321,7 @@ def close_position(bot_id: int, account: models.Account = Depends(get_account), 
         db.rollback()
         raise HTTPException(400, str(e))
     db.commit()
+    send_pending(db)
     return bot
 
 
