@@ -95,7 +95,7 @@ OANDA_BASE_URL=http://localhost:8099 OANDA_API_TOKEN=x OANDA_ACCOUNT_ID=001 \
 ## Trading bots
 
 Open the **Bots** page. Each bot trades one market with one strategy, holding at most one
-long position at a time:
+position at a time:
 
 | Strategy | Buys when | Sells when |
 |---|---|---|
@@ -103,7 +103,18 @@ long position at a time:
 | RSI mean reversion | RSI climbs back above the oversold level | RSI falls back below the overbought level |
 | Channel breakout | price closes above the highest high of the last N candles | price closes below the lowest low |
 
-Every bot also has an optional **stop-loss %** and **take-profit %**, and a fixed USD size per trade.
+Every bot also has:
+- **Trades**: *Buy only*, *Sell short only* (profits when price falls), or *Both ways* (each signal
+  closes the current trade and opens the opposite one).
+- **Stop-loss %** and **take-profit %** (optional). For a short they sit above and below the entry.
+- **Sizing**: a fixed USD amount per trade, or *Risk % of balance*. With risk sizing the bot sizes each
+  trade so that hitting the stop-loss loses about that % of your balance
+  (size = balance × risk % ÷ stop-loss %), never more than the max size you set.
+
+The **daily loss limit** at the top of the Bots page covers all your bots. Once their closed trades lose
+that much in a day (UTC), they stop opening new trades until midnight; open trades keep their stops.
+On paper, a short reserves its full value from your cash (shown as Reserved in the Wallet) and
+settles its profit or loss when it closes.
 
 1. **Backtest first.** "Run backtest" replays the strategy over past candles and shows return,
    win rate, profit factor, max drawdown and an equity curve, compared with simply buying and holding.
@@ -140,7 +151,7 @@ Notes for live use:
 - Keep the token secret. It can place trades on your account.
 - The trade size is in USD and converted to units at the current price. P&L shown for OANDA
   trades is in your OANDA account currency.
-- Bots are long only for now (they buy, then sell). Shorting is a planned addition.
+- For risk sizing on OANDA the balance used is your account NAV.
 - A strategy that wins on simulated prices proves nothing. The simulated feed is a random walk.
   Judge a strategy on OANDA data and a few weeks of practice trading before going live.
 
@@ -153,7 +164,7 @@ Notes for live use:
 | Markets | 14 instruments: EUR/USD, GBP/USD, AUD/USD, NZD/USD, BTC, ETH, SOL, AAPL, MSFT, TSLA, NVDA, gold, silver, WTI oil |
 | Charts | Candlestick charts (1m to 1d) with live updates over WebSocket |
 | Orders | Market and limit orders, buy and sell, bid/ask spread, cancel open orders, rejections with reasons |
-| Bots | 3 strategies, backtester, paper and OANDA execution, stop-loss/take-profit, per-bot P&L, trade history and activity log |
+| Bots | 3 strategies, long/short/both, backtester, paper and OANDA execution, stop-loss/take-profit, risk-based sizing, daily loss limit, per-bot P&L, trade history and activity log |
 | Portfolio | Holdings, average price, live value, unrealized and realized P&L, total return, allocation by asset class |
 
 ## API
@@ -172,6 +183,7 @@ Notes for live use:
 | GET | `/api/portfolio` | |
 | GET | `/api/bots/strategies`, `/api/bots/brokers` | Strategy list, OANDA connection status |
 | POST | `/api/bots/backtest` | Strategy config plus `bars`, `capital` |
+| GET / PUT | `/api/bots/settings` | Daily loss limit for all bots, and today's bot P&L |
 | GET | `/api/real/account`, `/api/real/instruments`, `/api/real/prices`, `/api/real/candles/{symbol}` | Real (OANDA) account, owner only |
 | GET / POST | `/api/real/orders`, `DELETE /api/real/orders/{id}` | Pending orders, place market/limit order, cancel |
 | GET | `/api/real/trades?state=open\|closed`, `POST /api/real/trades/{id}/close` | Positions and history |

@@ -1,9 +1,10 @@
 """Bot engine: runs each active bot once per closed candle, and a backtester that replays
 the same strategy over history."""
 import logging
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import models
@@ -14,6 +15,7 @@ log = logging.getLogger("moneyfx.bots")
 WARMUP_BARS = 300
 MAX_CONSECUTIVE_ERRORS = 5
 _errors: dict[int, int] = {}
+_limit_logged: dict[int, date] = {}
 
 
 def bot_log(db: Session, bot: models.Bot, message: str, level: str = "info"):
@@ -24,30 +26,71 @@ def _fmt(d: Decimal) -> str:
     return f"{d.normalize():f}"
 
 
-def record_open(db: Session, bot: models.Bot, fill: Fill):
+def record_open(db: Session, bot: models.Bot, fill: Fill, side: str = "long"):
     bot.position_qty = fill.quantity
+    bot.position_side = side
     bot.entry_price = fill.price
     bot.external_trade_id = fill.external_id
-    db.add(models.BotTrade(bot_id=bot.id, action="open", reason="signal", quantity=fill.quantity, price=fill.price,
-                           order_id=fill.order_id, external_id=fill.external_id))
+    db.add(models.BotTrade(bot_id=bot.id, action="open", side=side, reason="signal", quantity=fill.quantity,
+                           price=fill.price, order_id=fill.order_id, external_id=fill.external_id))
     sl, tp = stop_prices(fill.price, bot)
     stops = ", ".join(s for s in [sl and f"stop-loss {sl:.5g}", tp and f"take-profit {tp:.5g}"] if s)
-    bot_log(db, bot, f"Bought {_fmt(fill.quantity)} {bot.symbol} at {fill.price}" + (f" ({stops})" if stops else ""))
+    verb = "Bought" if side == "long" else "Sold short"
+    bot_log(db, bot, f"{verb} {_fmt(fill.quantity)} {bot.symbol} at {fill.price}" + (f" ({stops})" if stops else ""))
 
 
 def record_close(db: Session, bot: models.Bot, fill: Fill):
-    pnl = fill.pnl if fill.pnl is not None else (fill.price - bot.entry_price) * fill.quantity
+    side = bot.position_side or "long"
+    sign = -1 if side == "short" else 1
+    pnl = fill.pnl if fill.pnl is not None else sign * (fill.price - bot.entry_price) * fill.quantity
     bot.realized_pnl += pnl
     bot.trades_closed += 1
     bot.wins += 1 if pnl > 0 else 0
-    db.add(models.BotTrade(bot_id=bot.id, action="close", reason=fill.reason or "signal", quantity=fill.quantity,
-                           price=fill.price, pnl=pnl, order_id=fill.order_id, external_id=fill.external_id))
-    label = {"signal": "sell signal", "stop_loss": "stop-loss", "take_profit": "take-profit",
+    db.add(models.BotTrade(bot_id=bot.id, action="close", side=side, reason=fill.reason or "signal",
+                           quantity=fill.quantity, price=fill.price, pnl=pnl, order_id=fill.order_id,
+                           external_id=fill.external_id))
+    label = {"signal": "signal", "stop_loss": "stop-loss", "take_profit": "take-profit",
              "manual": "you closed it", "closed_on_oanda": "closed on OANDA"}.get(fill.reason, fill.reason)
-    bot_log(db, bot, f"Sold {_fmt(fill.quantity)} {bot.symbol} at {fill.price} ({label}), P&L {pnl:+.2f}")
+    verb = "Sold" if side == "long" else "Bought back"
+    bot_log(db, bot, f"{verb} {_fmt(fill.quantity)} {bot.symbol} at {fill.price} ({label}), P&L {pnl:+.2f}")
     bot.position_qty = Decimal(0)
+    bot.position_side = None
     bot.entry_price = None
     bot.external_trade_id = None
+
+
+def trade_size_usd(db: Session, bot: models.Bot, broker) -> Decimal:
+    """The fixed trade size, or with risk sizing, the size whose stop-loss loses risk_pct of the balance
+    (never more than the fixed size)."""
+    size = bot.trade_size_usd
+    if bot.risk_pct and bot.stop_loss_pct:
+        size = min(size, broker.equity(db, bot) * Decimal(str(bot.risk_pct)) / Decimal(str(bot.stop_loss_pct)))
+    return size
+
+
+def todays_bot_pnl(db: Session, account_id: int) -> Decimal:
+    """Realized P&L of all the account's bots since 00:00 UTC."""
+    midnight = datetime.combine(datetime.now(timezone.utc).date(), time(), timezone.utc)
+    db.flush()  # include a trade closed earlier in this same pass
+    total = db.scalar(select(func.sum(models.BotTrade.pnl)).join(models.Bot, models.BotTrade.bot_id == models.Bot.id)
+                      .where(models.Bot.account_id == account_id, models.BotTrade.action == "close",
+                             models.BotTrade.created_at >= midnight))
+    return Decimal(total or 0)
+
+
+def daily_limit_reached(db: Session, bot: models.Bot) -> bool:
+    limit = db.get(models.Account, bot.account_id).bot_daily_loss_limit
+    if not limit:
+        return False
+    pnl = todays_bot_pnl(db, bot.account_id)
+    if pnl > -limit:
+        return False
+    today = datetime.now(timezone.utc).date()
+    if _limit_logged.get(bot.id) != today:
+        _limit_logged[bot.id] = today
+        bot_log(db, bot, f"Daily loss limit reached (bots lost {-pnl:.2f} of {limit:.2f} USD today). "
+                         "No new trades until 00:00 UTC; open positions keep their stops.", "error")
+    return True
 
 
 def step(db: Session, bot: models.Bot):
@@ -70,14 +113,19 @@ def step(db: Session, bot: models.Bot):
     if last <= bot.last_candle_time:
         return
     bot.last_candle_time = last
-    signal = STRATEGIES[bot.strategy].signals(candles, bot.params)[-1]
+    want = {"buy": "long", "sell": "short"}.get(STRATEGIES[bot.strategy].signals(candles, bot.params)[-1])
+    if want is None:
+        return
 
-    if signal == "buy" and bot.position_qty == 0:
-        ask = broker.quote(bot.symbol)["ask"]
-        qty = broker.units_for(db, bot.symbol, bot.trade_size_usd, ask)
-        record_open(db, bot, broker.open_long(db, bot, qty))
-    elif signal == "sell" and bot.position_qty > 0:
-        record_close(db, bot, broker.close_long(db, bot, "signal"))
+    side = (bot.position_side or "long") if bot.position_qty > 0 else None
+    if side and side != want:
+        record_close(db, bot, broker.close(db, bot, "signal"))
+        db.commit()  # keep the close even if opening the opposite trade fails
+        side = None
+    if side is None and (bot.direction or "long") in (want, "both") and not daily_limit_reached(db, bot):
+        price = broker.quote(bot.symbol)["ask" if want == "long" else "bid"]
+        qty = broker.units_for(db, bot.symbol, trade_size_usd(db, bot, broker), price)
+        record_open(db, bot, broker.open(db, bot, qty, want), want)
 
 
 def run_bots(db: Session) -> int:
@@ -104,40 +152,56 @@ def run_bots(db: Session) -> int:
 
 
 def backtest(candles: list[dict], strategy: str, params: dict, stop_loss_pct: float | None,
-             take_profit_pct: float | None, trade_size: float, capital: float, spread_bps: float = 0) -> dict:
+             take_profit_pct: float | None, trade_size: float, capital: float, spread_bps: float = 0,
+             direction: str = "long", risk_pct: float | None = None) -> dict:
     """Replay the strategy candle by candle. Entries and signal exits fill at the candle close,
-    stops fill at the stop price (or the open, if price gapped through it)."""
+    stops fill at the stop price (or the open, if price gapped through it). A short holds its
+    full value as collateral, like the paper broker."""
     signals = STRATEGIES[strategy].signals(candles, params)
     half = spread_bps / 2 / 10_000
-    cash, qty, entry, entry_time = capital, 0.0, 0.0, 0
+    cash, qty, entry, entry_time, side = capital, 0.0, 0.0, 0, None
     trades, equity = [], []
 
+    def value(price):  # what the open position is worth at this price, collateral included
+        return qty * price if side == "long" else qty * (2 * entry - price)
+
     def close(price, t, reason):
-        nonlocal cash, qty
-        pnl = (price - entry) * qty
-        cash += price * qty
-        trades.append({"entry_time": entry_time, "exit_time": t, "entry_price": entry, "exit_price": price,
-                       "quantity": qty, "pnl": round(pnl, 2), "return_pct": round((price / entry - 1) * 100, 3),
-                       "reason": reason})
-        qty = 0.0
+        nonlocal cash, qty, side
+        sign = 1 if side == "long" else -1
+        cash += value(price)
+        trades.append({"side": side, "entry_time": entry_time, "exit_time": t, "entry_price": entry, "exit_price": price,
+                       "quantity": qty, "pnl": round(sign * (price - entry) * qty, 2),
+                       "return_pct": round(sign * (price / entry - 1) * 100, 3), "reason": reason})
+        qty, side = 0.0, None
 
     for c, sig in zip(candles, signals):
-        if qty:
+        if side == "long":
             sl = entry * (1 - stop_loss_pct / 100) if stop_loss_pct else None
             tp = entry * (1 + take_profit_pct / 100) if take_profit_pct else None
             if sl and c["low"] <= sl:
                 close(min(c["open"], sl), c["time"], "stop_loss")
             elif tp and c["high"] >= tp:
                 close(max(c["open"], tp), c["time"], "take_profit")
-        if sig == "buy" and not qty:
-            price = c["close"] * (1 + half)
-            size = min(trade_size, cash)
+        elif side == "short":
+            sl = entry * (1 + stop_loss_pct / 100) if stop_loss_pct else None
+            tp = entry * (1 - take_profit_pct / 100) if take_profit_pct else None
+            if sl and c["high"] >= sl:
+                close(max(c["open"], sl), c["time"], "stop_loss")
+            elif tp and c["low"] <= tp:
+                close(min(c["open"], tp), c["time"], "take_profit")
+        want = {"buy": "long", "sell": "short"}.get(sig)
+        if want and side and side != want:
+            close(c["close"] * (1 - half if side == "long" else 1 + half), c["time"], "signal")
+        if want and side is None and direction in (want, "both"):
+            price = c["close"] * (1 + half if want == "long" else 1 - half)
+            size = trade_size
+            if risk_pct and stop_loss_pct:
+                size = min(size, cash * risk_pct / stop_loss_pct)
+            size = min(size, cash)
             if size > 0:
-                qty, entry, entry_time = size / price, price, c["time"]
+                qty, entry, entry_time, side = size / price, price, c["time"], want
                 cash -= size
-        elif sig == "sell" and qty:
-            close(c["close"] * (1 - half), c["time"], "signal")
-        equity.append({"time": c["time"], "value": round(cash + qty * c["close"], 2)})
+        equity.append({"time": c["time"], "value": round(cash + (value(c["close"]) if side else 0), 2)})
 
     final = equity[-1]["value"] if equity else capital
     peak, max_dd = capital, 0.0
@@ -156,7 +220,7 @@ def backtest(candles: list[dict], strategy: str, params: dict, stop_loss_pct: fl
         "win_rate_pct": round(len(wins) / len(trades) * 100, 1) if trades else 0,
         "profit_factor": round(gross_win / gross_loss, 2) if gross_loss else None,
         "max_drawdown_pct": round(max_dd, 2),
-        "open_position": bool(qty),
+        "open_position": bool(side),
         "trade_list": trades,
         "equity_curve": equity,
         "from": candles[0]["time"] if candles else None,

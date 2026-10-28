@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from . import models
 from .config import BACKGROUND_WORKERS, CORS_ORIGINS, STATIC_DIR
-from .database import Base, SessionLocal, engine
+from .database import Base, SessionLocal, add_missing_columns, engine
 from .market import INSTRUMENTS
 from .bots import run_bots
 from .routers import auth, bots, markets, orders, portfolio, real, wallet
@@ -24,6 +24,7 @@ log = logging.getLogger("moneyfx")
 
 def init_db():
     Base.metadata.create_all(engine)
+    add_missing_columns()
     with SessionLocal() as db:
         existing = set(db.scalars(select(models.Instrument.symbol)))
         for symbol, name, cls, base, vol, spread, pdp, qdp, min_qty in INSTRUMENTS:

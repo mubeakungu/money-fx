@@ -50,6 +50,8 @@ class Account(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     base_currency: Mapped[str] = mapped_column(String(10), default="USD")
     status: Mapped[str] = mapped_column(Enum("active", "suspended", "closed", name="account_status"), default="active")
+    # Bots stop opening new trades for the rest of the UTC day once their closed trades lose this much
+    bot_daily_loss_limit: Mapped[Decimal | None] = mapped_column(Money, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     user: Mapped[User] = relationship(back_populates="account")
@@ -83,7 +85,7 @@ class Transaction(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     wallet_id: Mapped[int] = mapped_column(ForeignKey("wallets.id"), index=True)
     type: Mapped[str] = mapped_column(
-        Enum("deposit", "withdrawal", "trade_buy", "trade_sell", name="txn_type")
+        Enum("deposit", "withdrawal", "trade_buy", "trade_sell", "bot_short", name="txn_type")
     )
     amount: Mapped[Decimal] = mapped_column(Money)  # signed: + credit, - debit
     balance_after: Mapped[Decimal] = mapped_column(Money)
@@ -153,7 +155,7 @@ class Position(Base):
 
 
 class Bot(Base):
-    """An automated strategy trading one instrument, long only, one position at a time."""
+    """An automated strategy trading one instrument, one position at a time, long, short or both."""
 
     __tablename__ = "bots"
 
@@ -168,11 +170,15 @@ class Bot(Base):
     trade_size_usd: Mapped[Decimal] = mapped_column(Money)
     stop_loss_pct: Mapped[float | None] = mapped_column(nullable=True)
     take_profit_pct: Mapped[float | None] = mapped_column(nullable=True)
+    direction: Mapped[str] = mapped_column(String(5), default="long")  # long / short / both
+    # When set, each trade risks this % of the balance (size = balance x risk% / stop-loss%), capped at trade_size_usd
+    risk_pct: Mapped[float | None] = mapped_column(nullable=True)
     status: Mapped[str] = mapped_column(Enum("running", "stopped", "error", name="bot_status"), default="stopped")
     error: Mapped[str | None] = mapped_column(String(300), nullable=True)
     # Current open position (quantity 0 = flat)
     position_qty: Mapped[Decimal] = mapped_column(Money, default=Decimal(0))
     entry_price: Mapped[Decimal | None] = mapped_column(Money, nullable=True)
+    position_side: Mapped[str | None] = mapped_column(String(5), nullable=True)  # long / short while a position is open
     external_trade_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
     last_candle_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Running stats
@@ -188,6 +194,7 @@ class BotTrade(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     bot_id: Mapped[int] = mapped_column(ForeignKey("bots.id"), index=True)
     action: Mapped[str] = mapped_column(Enum("open", "close", name="bot_trade_action"))
+    side: Mapped[str] = mapped_column(String(5), default="long")  # the position's side: long / short
     reason: Mapped[str] = mapped_column(String(30))  # signal / stop_loss / take_profit / manual
     quantity: Mapped[Decimal] = mapped_column(Money)
     price: Mapped[Decimal] = mapped_column(Money)
