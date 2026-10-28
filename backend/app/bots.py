@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import models
+from .alerts import discard, notify, send_pending
 from .brokers import BrokerError, Fill, get_broker, stop_prices
 from .strategies import STRATEGIES
 
@@ -20,6 +21,10 @@ _limit_logged: dict[int, date] = {}
 
 def bot_log(db: Session, bot: models.Bot, message: str, level: str = "info"):
     db.add(models.BotLog(bot_id=bot.id, level=level, message=message[:400]))
+
+
+def alert(db: Session, bot: models.Bot, text: str):
+    notify(db, bot, f"[{'OANDA' if bot.broker == 'oanda' else 'Paper'}] {text}")
 
 
 def _fmt(d: Decimal) -> str:
@@ -36,7 +41,9 @@ def record_open(db: Session, bot: models.Bot, fill: Fill, side: str = "long"):
     sl, tp = stop_prices(fill.price, bot)
     stops = ", ".join(s for s in [sl and f"stop-loss {sl:.5g}", tp and f"take-profit {tp:.5g}"] if s)
     verb = "Bought" if side == "long" else "Sold short"
-    bot_log(db, bot, f"{verb} {_fmt(fill.quantity)} {bot.symbol} at {fill.price}" + (f" ({stops})" if stops else ""))
+    msg = f"{verb} {_fmt(fill.quantity)} {bot.symbol} at {fill.price}" + (f" ({stops})" if stops else "")
+    bot_log(db, bot, msg)
+    alert(db, bot, msg)
 
 
 def record_close(db: Session, bot: models.Bot, fill: Fill):
@@ -52,7 +59,9 @@ def record_close(db: Session, bot: models.Bot, fill: Fill):
     label = {"signal": "signal", "stop_loss": "stop-loss", "take_profit": "take-profit",
              "manual": "you closed it", "closed_on_oanda": "closed on OANDA"}.get(fill.reason, fill.reason)
     verb = "Sold" if side == "long" else "Bought back"
-    bot_log(db, bot, f"{verb} {_fmt(fill.quantity)} {bot.symbol} at {fill.price} ({label}), P&L {pnl:+.2f}")
+    msg = f"{verb} {_fmt(fill.quantity)} {bot.symbol} at {fill.price} ({label}), P&L {pnl:+.2f}"
+    bot_log(db, bot, msg)
+    alert(db, bot, msg)
     bot.position_qty = Decimal(0)
     bot.position_side = None
     bot.entry_price = None
@@ -88,8 +97,10 @@ def daily_limit_reached(db: Session, bot: models.Bot) -> bool:
     today = datetime.now(timezone.utc).date()
     if _limit_logged.get(bot.id) != today:
         _limit_logged[bot.id] = today
-        bot_log(db, bot, f"Daily loss limit reached (bots lost {-pnl:.2f} of {limit:.2f} USD today). "
-                         "No new trades until 00:00 UTC; open positions keep their stops.", "error")
+        msg = (f"Daily loss limit reached (bots lost {-pnl:.2f} of {limit:.2f} USD today). "
+               "No new trades until 00:00 UTC; open positions keep their stops.")
+        bot_log(db, bot, msg, "error")
+        alert(db, bot, msg)
     return True
 
 
@@ -121,6 +132,7 @@ def step(db: Session, bot: models.Bot):
     if side and side != want:
         record_close(db, bot, broker.close(db, bot, "signal"))
         db.commit()  # keep the close even if opening the opposite trade fails
+        send_pending(db)
         side = None
     if side is None and (bot.direction or "long") in (want, "both") and not daily_limit_reached(db, bot):
         price = broker.quote(bot.symbol)["ask" if want == "long" else "bid"]
@@ -134,19 +146,24 @@ def run_bots(db: Session) -> int:
         try:
             step(db, bot)
             db.commit()
+            send_pending(db)
             _errors.pop(bot.id, None)
         except BrokerError as e:
             db.rollback()
+            discard(db)
             n = _errors[bot.id] = _errors.get(bot.id, 0) + 1
             bot_log(db, bot, str(e), "error")
             if n >= MAX_CONSECUTIVE_ERRORS:
                 bot.status = "error"
                 bot.error = str(e)[:300]
                 bot_log(db, bot, f"Stopped after {n} errors in a row", "error")
+                alert(db, bot, f"Bot stopped after {n} errors in a row. Last error: {e}")
                 _errors.pop(bot.id, None)
             db.commit()
+            send_pending(db)
         except Exception:
             db.rollback()
+            discard(db)
             log.exception("bot %s failed", bot.id)
     return len(bots)
 

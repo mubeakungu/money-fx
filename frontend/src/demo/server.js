@@ -297,7 +297,8 @@ function tick() {
   if (changed) save()
 }
 
-const settingsOut = () => ({ daily_loss_limit_usd: S.settings?.daily_loss_limit_usd ?? null, today_pnl_usd: money(todaysBotPnl()) })
+const settingsOut = () => ({ daily_loss_limit_usd: S.settings?.daily_loss_limit_usd ?? null, today_pnl_usd: money(todaysBotPnl()),
+  telegram: { available: false, connected: false } })
 const botOut = ({ _errors, _limitLogged, last_candle_time, ...b }) => b
 
 function createBot(body) {

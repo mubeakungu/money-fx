@@ -52,6 +52,9 @@ class Account(Base):
     status: Mapped[str] = mapped_column(Enum("active", "suspended", "closed", name="account_status"), default="active")
     # Bots stop opening new trades for the rest of the UTC day once their closed trades lose this much
     bot_daily_loss_limit: Mapped[Decimal | None] = mapped_column(Money, nullable=True)
+    # Telegram chat that gets bot alerts, and the one-time code used to link it
+    telegram_chat_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    telegram_link_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     user: Mapped[User] = relationship(back_populates="account")
