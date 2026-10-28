@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from . import models
 from .market import feed
-from .trading import place_order
+from .trading import cash_wallet, place_order
 
 INTERVAL_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
 
@@ -32,10 +32,20 @@ class Fill:
     reason: str | None = None
 
 
-def stop_prices(entry: Decimal, bot: models.Bot) -> tuple[Decimal | None, Decimal | None]:
-    sl = entry * (1 - Decimal(str(bot.stop_loss_pct)) / 100) if bot.stop_loss_pct else None
-    tp = entry * (1 + Decimal(str(bot.take_profit_pct)) / 100) if bot.take_profit_pct else None
+def stop_prices(entry: Decimal, bot: models.Bot, side: str | None = None) -> tuple[Decimal | None, Decimal | None]:
+    """Stop-loss and take-profit prices: below/above the entry for a long, above/below for a short."""
+    sign = -1 if (side or bot.position_side) == "short" else 1
+    sl = entry * (1 - sign * Decimal(str(bot.stop_loss_pct)) / 100) if bot.stop_loss_pct else None
+    tp = entry * (1 + sign * Decimal(str(bot.take_profit_pct)) / 100) if bot.take_profit_pct else None
     return sl, tp
+
+
+def stop_hit(bot: models.Bot, bid: Decimal, ask: Decimal) -> str | None:
+    """Which stop the current price has reached, if any. A long exits at the bid, a short at the ask."""
+    sl, tp = stop_prices(bot.entry_price, bot)
+    if bot.position_side == "short":
+        return "stop_loss" if sl is not None and ask >= sl else "take_profit" if tp is not None and ask <= tp else None
+    return "stop_loss" if sl is not None and bid <= sl else "take_profit" if tp is not None and bid >= tp else None
 
 
 class PaperBroker:
@@ -56,6 +66,9 @@ class PaperBroker:
             raise BrokerError(f"Trade size too small: minimum is {inst.min_qty.normalize():f} {symbol}")
         return qty
 
+    def equity(self, db: Session, bot: models.Bot) -> Decimal:
+        return cash_wallet(db, db.get(models.Account, bot.account_id)).balance
+
     def _order(self, db, bot, side, qty) -> models.Order:
         account = db.get(models.Account, bot.account_id)
         order = place_order(db, account, bot.symbol, side, "market", qty, None)
@@ -63,24 +76,39 @@ class PaperBroker:
             raise BrokerError(order.reject_reason or f"Order {order.status}")
         return order
 
-    def open_long(self, db: Session, bot: models.Bot, qty: Decimal) -> Fill:
-        o = self._order(db, bot, "buy", qty)
-        return Fill(price=o.filled_price, quantity=qty, order_id=o.id)
+    def open(self, db: Session, bot: models.Bot, qty: Decimal, side: str) -> Fill:
+        if side == "long":
+            o = self._order(db, bot, "buy", qty)
+            return Fill(price=o.filled_price, quantity=qty, order_id=o.id)
+        # The paper account has no short positions, so a bot short holds its full value as collateral
+        # (reserved in the wallet like a limit order) and settles the profit or loss when it closes.
+        bid = self.quote(bot.symbol)["bid"]
+        wallet = cash_wallet(db, db.get(models.Account, bot.account_id))
+        collateral = bid * qty
+        if wallet.available < collateral:
+            raise BrokerError(f"Insufficient funds: a {collateral:.2f} USD short needs that much available cash")
+        wallet.locked += collateral
+        return Fill(price=bid, quantity=qty)
 
-    def close_long(self, db: Session, bot: models.Bot, reason: str) -> Fill:
-        o = self._order(db, bot, "sell", bot.position_qty)
-        return Fill(price=o.filled_price, quantity=o.quantity, order_id=o.id, reason=reason,
-                    pnl=(o.filled_price - bot.entry_price) * o.quantity)
+    def close(self, db: Session, bot: models.Bot, reason: str) -> Fill:
+        if bot.position_side != "short":
+            o = self._order(db, bot, "sell", bot.position_qty)
+            return Fill(price=o.filled_price, quantity=o.quantity, order_id=o.id, reason=reason,
+                        pnl=(o.filled_price - bot.entry_price) * o.quantity)
+        ask = self.quote(bot.symbol)["ask"]
+        pnl = (bot.entry_price - ask) * bot.position_qty
+        wallet = cash_wallet(db, db.get(models.Account, bot.account_id))
+        wallet.locked -= bot.entry_price * bot.position_qty
+        wallet.balance += pnl
+        db.add(models.Transaction(wallet_id=wallet.id, type="bot_short", amount=pnl, balance_after=wallet.balance,
+                                  reference=f"Bot {bot.name}: short {bot.position_qty.normalize():f} {bot.symbol} closed"))
+        return Fill(price=ask, quantity=bot.position_qty, reason=reason, pnl=pnl)
 
     def sync(self, db: Session, bot: models.Bot) -> Fill | None:
-        """Paper stops live here: close when the bid reaches the stop-loss or take-profit."""
-        sl, tp = stop_prices(bot.entry_price, bot)
-        bid = self.quote(bot.symbol)["bid"]
-        if sl is not None and bid <= sl:
-            return self.close_long(db, bot, "stop_loss")
-        if tp is not None and bid >= tp:
-            return self.close_long(db, bot, "take_profit")
-        return None
+        """Paper stops live here: close when the price reaches the stop-loss or take-profit."""
+        q = self.quote(bot.symbol)
+        reason = stop_hit(bot, q["bid"], q["ask"])
+        return self.close(db, bot, reason) if reason else None
 
 
 # money fx symbol -> OANDA instrument
@@ -162,10 +190,14 @@ class OandaBroker:
             raise BrokerError(f"Trade size too small: OANDA minimum for {symbol} is {spec['minimumTradeSize']} units")
         return qty
 
-    def open_long(self, db: Session, bot: models.Bot, qty: Decimal) -> Fill:
-        # Stops are placed relative to the current ask and held by OANDA, so they work even if this server is down.
-        sl, tp = stop_prices(self.quote(bot.symbol)["ask"], bot)
-        order = {"type": "MARKET", "instrument": self.instrument(bot.symbol), "units": str(qty),
+    def equity(self, db: Session, bot: models.Bot) -> Decimal:
+        return Decimal(self.summary()["NAV"])
+
+    def open(self, db: Session, bot: models.Bot, qty: Decimal, side: str) -> Fill:
+        # Stops are placed relative to the current price and held by OANDA, so they work even if this server is down.
+        q = self.quote(bot.symbol)
+        sl, tp = stop_prices(q["ask"] if side == "long" else q["bid"], bot, side)
+        order = {"type": "MARKET", "instrument": self.instrument(bot.symbol), "units": str(qty if side == "long" else -qty),
                  "timeInForce": "FOK", "positionFill": "DEFAULT"}
         if sl is not None:
             order["stopLossOnFill"] = {"price": self._price_str(bot.symbol, sl)}
@@ -177,9 +209,9 @@ class OandaBroker:
             reason = (data.get("orderCancelTransaction") or {}).get("reason", "order did not fill")
             raise BrokerError(f"OANDA rejected the order: {reason}")
         t = fill["tradeOpened"]
-        return Fill(price=Decimal(t.get("price", fill["price"])), quantity=Decimal(t["units"]), external_id=t["tradeID"])
+        return Fill(price=Decimal(t.get("price", fill["price"])), quantity=abs(Decimal(t["units"])), external_id=t["tradeID"])
 
-    def close_long(self, db: Session, bot: models.Bot, reason: str) -> Fill:
+    def close(self, db: Session, bot: models.Bot, reason: str) -> Fill:
         data = self._req("PUT", self._acct(f"/trades/{bot.external_trade_id}/close"), json={"units": "ALL"})
         fill = data.get("orderFillTransaction")
         if not fill:
@@ -194,12 +226,17 @@ class OandaBroker:
             return None
         price = Decimal(trade.get("averageClosePrice", trade["price"]))
         sl, tp = stop_prices(Decimal(trade["price"]), bot)
-        if sl is not None and price <= sl * Decimal("1.001"):
+        # Allow 0.1% for slippage past the stop price
+        reason = "closed_on_oanda"
+        if bot.position_side == "short":
+            if sl is not None and price >= sl * Decimal("0.999"):
+                reason = "stop_loss"
+            elif tp is not None and price <= tp * Decimal("1.001"):
+                reason = "take_profit"
+        elif sl is not None and price <= sl * Decimal("1.001"):
             reason = "stop_loss"
         elif tp is not None and price >= tp * Decimal("0.999"):
             reason = "take_profit"
-        else:
-            reason = "closed_on_oanda"
         return Fill(price=price, quantity=bot.position_qty, pnl=Decimal(trade.get("realizedPL", "0")),
                     external_id=bot.external_trade_id, reason=reason)
 

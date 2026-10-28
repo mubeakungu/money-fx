@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
-from ..bots import backtest, bot_log, record_close
+from ..bots import backtest, bot_log, record_close, todays_bot_pnl
 from ..brokers import OANDA_SYMBOLS, BrokerError, get_broker, oanda_configured
 from ..config import OANDA_OWNER_EMAILS
 from ..database import get_db
@@ -30,6 +30,8 @@ class StrategyConfig(BaseModel):
     trade_size_usd: Decimal = Field(gt=0, le=1_000_000)
     stop_loss_pct: float | None = Field(default=None, gt=0, le=50)
     take_profit_pct: float | None = Field(default=None, gt=0, le=500)
+    direction: Literal["long", "short", "both"] = "long"
+    risk_pct: float | None = Field(default=None, gt=0, le=10)
 
 
 class BotIn(StrategyConfig):
@@ -52,9 +54,12 @@ class BotOut(Out):
     trade_size_usd: Dec
     stop_loss_pct: float | None
     take_profit_pct: float | None
+    direction: str | None
+    risk_pct: float | None
     status: str
     error: str | None
     position_qty: Dec
+    position_side: str | None
     entry_price: Dec | None
     realized_pnl: Dec
     trades_closed: int
@@ -64,6 +69,7 @@ class BotOut(Out):
 class BotTradeOut(Out):
     id: int
     action: str
+    side: str | None
     reason: str
     quantity: Dec
     price: Dec
@@ -95,6 +101,8 @@ def _check(db: Session, account: models.Account, cfg: StrategyConfig) -> dict:
         raise HTTPException(400, f"Unknown instrument {cfg.symbol}")
     if cfg.broker == "oanda" and symbol not in OANDA_SYMBOLS:
         raise HTTPException(400, f"OANDA bots can trade {', '.join(OANDA_SYMBOLS)}")
+    if cfg.risk_pct and not cfg.stop_loss_pct:
+        raise HTTPException(400, "Risk-based sizing needs a stop-loss: the stop decides how much a trade can lose")
     try:
         return validate(cfg.strategy, cfg.params)
     except ValueError as e:
@@ -128,6 +136,28 @@ def brokers(account: models.Account = Depends(get_account)):
     return {"paper": {"configured": True}, "oanda": oanda}
 
 
+class BotSettings(BaseModel):
+    daily_loss_limit_usd: Decimal | None = Field(default=None, gt=0, le=10_000_000)
+
+
+def _settings(db: Session, account: models.Account) -> dict:
+    limit = account.bot_daily_loss_limit
+    return {"daily_loss_limit_usd": None if limit is None else format(limit.normalize(), "f"),
+            "today_pnl_usd": format(todays_bot_pnl(db, account.id).quantize(Decimal("0.01")), "f")}
+
+
+@router.get("/settings")
+def get_settings(account: models.Account = Depends(get_account), db: Session = Depends(get_db)):
+    return _settings(db, account)
+
+
+@router.put("/settings")
+def put_settings(body: BotSettings, account: models.Account = Depends(get_account), db: Session = Depends(get_db)):
+    account.bot_daily_loss_limit = body.daily_loss_limit_usd
+    db.commit()
+    return _settings(db, account)
+
+
 @router.post("/backtest")
 def run_backtest(body: BacktestIn, account: models.Account = Depends(get_account), db: Session = Depends(get_db)):
     params = _check(db, account, body)
@@ -140,7 +170,7 @@ def run_backtest(body: BacktestIn, account: models.Account = Depends(get_account
     if len(candles) < 20:
         raise HTTPException(400, "Not enough price history for a backtest")
     result = backtest(candles, body.strategy, params, body.stop_loss_pct, body.take_profit_pct,
-                      float(body.trade_size_usd), body.capital, inst.spread_bps)
+                      float(body.trade_size_usd), body.capital, inst.spread_bps, body.direction, body.risk_pct)
     result["data_source"] = "OANDA" if body.broker == "oanda" else "money fx simulated feed"
     return result
 
@@ -156,12 +186,16 @@ def create_bot(body: BotIn, account: models.Account = Depends(get_account), db: 
     bot = models.Bot(account_id=account.id, name=body.name.strip(), symbol=body.symbol.upper(), broker=body.broker,
                      strategy=body.strategy, params=params, interval=body.interval,
                      trade_size_usd=body.trade_size_usd, stop_loss_pct=body.stop_loss_pct,
-                     take_profit_pct=body.take_profit_pct, status="stopped", position_qty=Decimal(0),
+                     take_profit_pct=body.take_profit_pct, direction=body.direction, risk_pct=body.risk_pct,
+                     status="stopped", position_qty=Decimal(0),
                      realized_pnl=Decimal(0), trades_closed=0, wins=0)
     db.add(bot)
     db.flush()
-    bot_log(db, bot, f"Created: {STRATEGIES[bot.strategy].name} on {bot.symbol} {bot.interval}, "
-                     f"{body.trade_size_usd} USD per trade via {'OANDA' if bot.broker == 'oanda' else 'paper trading'}")
+    size = (f"risking {body.risk_pct}% of the balance per trade, at most {body.trade_size_usd} USD" if body.risk_pct
+            else f"{body.trade_size_usd} USD per trade")
+    trades = {"long": "buys only", "short": "sells short only", "both": "buys and sells short"}[body.direction]
+    bot_log(db, bot, f"Created: {STRATEGIES[bot.strategy].name} on {bot.symbol} {bot.interval}, {trades}, {size}, "
+                     f"via {'OANDA' if bot.broker == 'oanda' else 'paper trading'}")
     db.commit()
     return bot
 
@@ -176,8 +210,10 @@ def bot_detail(bot_id: int, account: models.Account = Depends(get_account), db: 
     unrealized = None
     if bot.position_qty > 0:
         try:
-            bid = get_broker(bot.broker).quote(bot.symbol)["bid"]
-            unrealized = format(((bid - bot.entry_price) * bot.position_qty).quantize(Decimal("0.01")), "f")
+            q = get_broker(bot.broker).quote(bot.symbol)
+            move = bot.entry_price - q["ask"] if bot.position_side == "short" else q["bid"] - bot.entry_price
+            pnl = move * bot.position_qty
+            unrealized = format(pnl.quantize(Decimal("0.01")), "f")
         except BrokerError:
             pass
     return {"bot": BotOut.model_validate(bot).model_dump(mode="json"), "unrealized_pnl": unrealized,
@@ -219,7 +255,7 @@ def close_position(bot_id: int, account: models.Account = Depends(get_account), 
     if bot.position_qty == 0:
         raise HTTPException(400, "This bot has no open position")
     try:
-        record_close(db, bot, get_broker(bot.broker).close_long(db, bot, "manual"))
+        record_close(db, bot, get_broker(bot.broker).close(db, bot, "manual"))
     except BrokerError as e:
         db.rollback()
         raise HTTPException(400, str(e))

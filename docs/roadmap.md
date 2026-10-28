@@ -40,8 +40,9 @@ Required before any real user deposits real funds. These are legal and safety re
 ## Trading bot (added)
 
 Bots run strategies automatically in paper mode or on an OANDA account; see README. Next steps:
-- Short selling for bots (sell signal while flat opens a short)
-- Trailing stop-loss, position sizing by % of balance / risk per trade
+- ~~Short selling for bots~~ (done: long only, short only, or both ways)
+- ~~Position sizing by risk per trade, daily loss limit~~ (done)
+- Trailing stop-loss
 - Telegram or email alerts on every bot trade
 - Parameter sweep: backtest a grid of settings and rank them
 - Run the bot 24/7 on a small cloud server (it must stay on to act on signals)

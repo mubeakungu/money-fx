@@ -155,42 +155,99 @@ function portfolio() {
 const botLog = (bot, message, level = 'info') => S.botLogs.unshift({ id: id(), bot_id: bot.id, level, message, created_at: now() })
 const closedCandles = (bot, n = 300) => candles(bot.symbol, INTERVALS[bot.interval], n + 1).slice(0, -1)
 
-function botOpen(bot) {
+const stopPrices = (bot, entry, side) => {
+  const sign = side === 'short' ? -1 : 1
+  return [bot.stop_loss_pct ? entry * (1 - (sign * bot.stop_loss_pct) / 100) : null,
+    bot.take_profit_pct ? entry * (1 + (sign * bot.take_profit_pct) / 100) : null]
+}
+
+function todaysBotPnl() {
+  const midnight = new Date()
+  midnight.setUTCHours(0, 0, 0, 0)
+  return S.botTrades.filter((t) => t.action === 'close' && new Date(t.created_at) >= midnight).reduce((s, t) => s + Number(t.pnl), 0)
+}
+
+function dailyLimitReached(bot) {
+  const limit = Number(S.settings?.daily_loss_limit_usd)
+  if (!limit) return false
+  const pnl = todaysBotPnl()
+  if (pnl > -limit) return false
+  const today = new Date().toISOString().slice(0, 10)
+  if (bot._limitLogged !== today) {
+    bot._limitLogged = today
+    botLog(bot, `Daily loss limit reached (bots lost ${(-pnl).toFixed(2)} of ${limit.toFixed(2)} USD today). No new trades until 00:00 UTC; open positions keep their stops.`, 'error')
+  }
+  return true
+}
+
+function botOpen(bot, side) {
   const inst = BY_SYMBOL[bot.symbol]
-  const ask = quote(bot.symbol).ask
-  const q = Math.floor((Number(bot.trade_size_usd) / ask) * 10 ** inst.qty_decimals) / 10 ** inst.qty_decimals
-  if (q < inst.min_qty) throw new Error(`Trade size too small: minimum is ${inst.min_qty} ${bot.symbol}`)
-  const o = placeOrder({ symbol: bot.symbol, side: 'buy', quantity: q })
-  if (o.status !== 'filled') throw new Error(o.reject_reason)
-  bot.position_qty = o.quantity
-  bot.entry_price = o.filled_price
-  S.botTrades.unshift({ id: id(), bot_id: bot.id, action: 'open', reason: 'signal', quantity: o.quantity, price: o.filled_price, pnl: null, created_at: now() })
-  const e = Number(o.filled_price)
-  const stops = [bot.stop_loss_pct && `stop-loss ${roundTo(e * (1 - bot.stop_loss_pct / 100), inst.price_decimals)}`,
-    bot.take_profit_pct && `take-profit ${roundTo(e * (1 + bot.take_profit_pct / 100), inst.price_decimals)}`].filter(Boolean).join(', ')
-  botLog(bot, `Bought ${o.quantity} ${bot.symbol} at ${o.filled_price}${stops ? ` (${stops})` : ''}`)
+  const q = quote(bot.symbol)
+  let size = Number(bot.trade_size_usd)
+  if (bot.risk_pct && bot.stop_loss_pct) size = Math.min(size, (S.wallet.balance * bot.risk_pct) / bot.stop_loss_pct)
+  const price = side === 'long' ? q.ask : q.bid
+  const qty = Math.floor((size / price) * 10 ** inst.qty_decimals) / 10 ** inst.qty_decimals
+  if (qty < inst.min_qty) throw new Error(`Trade size too small: minimum is ${inst.min_qty} ${bot.symbol}`)
+  let fillPrice
+  if (side === 'long') {
+    const o = placeOrder({ symbol: bot.symbol, side: 'buy', quantity: qty })
+    if (o.status !== 'filled') throw new Error(o.reject_reason)
+    fillPrice = o.filled_price
+  } else {
+    // The paper account has no short positions, so a bot short reserves its full value as collateral
+    const collateral = q.bid * qty
+    if (S.wallet.balance - S.wallet.locked < collateral) throw new Error(`Insufficient funds: a ${collateral.toFixed(2)} USD short needs that much available cash`)
+    S.wallet.locked += collateral
+    fillPrice = fixed(q.bid, inst.price_decimals)
+  }
+  bot.position_qty = qtyStr(qty)
+  bot.position_side = side
+  bot.entry_price = fillPrice
+  S.botTrades.unshift({ id: id(), bot_id: bot.id, action: 'open', side, reason: 'signal', quantity: bot.position_qty, price: fillPrice, pnl: null, created_at: now() })
+  const [slp, tpp] = stopPrices(bot, Number(fillPrice), side)
+  const stops = [slp && `stop-loss ${roundTo(slp, inst.price_decimals)}`, tpp && `take-profit ${roundTo(tpp, inst.price_decimals)}`].filter(Boolean).join(', ')
+  botLog(bot, `${side === 'long' ? 'Bought' : 'Sold short'} ${bot.position_qty} ${bot.symbol} at ${fillPrice}${stops ? ` (${stops})` : ''}`)
 }
 
 function botClose(bot, reason) {
-  const o = placeOrder({ symbol: bot.symbol, side: 'sell', quantity: bot.position_qty })
-  if (o.status !== 'filled') throw new Error(o.reject_reason)
-  const pnl = (Number(o.filled_price) - Number(bot.entry_price)) * Number(o.quantity)
+  const side = bot.position_side ?? 'long'
+  const qty = Number(bot.position_qty)
+  const entry = Number(bot.entry_price)
+  let price, pnl
+  if (side === 'long') {
+    const o = placeOrder({ symbol: bot.symbol, side: 'sell', quantity: bot.position_qty })
+    if (o.status !== 'filled') throw new Error(o.reject_reason)
+    price = o.filled_price
+    pnl = (Number(price) - entry) * qty
+  } else {
+    const ask = quote(bot.symbol).ask
+    price = fixed(ask, BY_SYMBOL[bot.symbol].price_decimals)
+    pnl = (entry - ask) * qty
+    S.wallet.locked -= entry * qty
+    S.wallet.balance += pnl
+    txn('bot_short', pnl, { reference: `Bot ${bot.name}: short ${bot.position_qty} ${bot.symbol} closed` })
+  }
   bot.realized_pnl = money(Number(bot.realized_pnl) + pnl)
   bot.trades_closed += 1
   if (pnl > 0) bot.wins += 1
-  S.botTrades.unshift({ id: id(), bot_id: bot.id, action: 'close', reason, quantity: o.quantity, price: o.filled_price, pnl: money(pnl), created_at: now() })
-  const label = { signal: 'sell signal', stop_loss: 'stop-loss', take_profit: 'take-profit', manual: 'you closed it' }[reason]
-  botLog(bot, `Sold ${o.quantity} ${bot.symbol} at ${o.filled_price} (${label}), P&L ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}`)
+  S.botTrades.unshift({ id: id(), bot_id: bot.id, action: 'close', side, reason, quantity: bot.position_qty, price, pnl: money(pnl), created_at: now() })
+  const label = { signal: 'signal', stop_loss: 'stop-loss', take_profit: 'take-profit', manual: 'you closed it' }[reason]
+  botLog(bot, `${side === 'long' ? 'Sold' : 'Bought back'} ${bot.position_qty} ${bot.symbol} at ${price} (${label}), P&L ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}`)
   bot.position_qty = '0'
+  bot.position_side = null
   bot.entry_price = null
 }
 
 function stepBot(bot) {
   if (Number(bot.position_qty) > 0) {
-    const e = Number(bot.entry_price)
-    const bid = quote(bot.symbol).bid
-    if (bot.stop_loss_pct && bid <= e * (1 - bot.stop_loss_pct / 100)) botClose(bot, 'stop_loss')
-    else if (bot.take_profit_pct && bid >= e * (1 + bot.take_profit_pct / 100)) botClose(bot, 'take_profit')
+    const side = bot.position_side ?? 'long'
+    const [slp, tpp] = stopPrices(bot, Number(bot.entry_price), side)
+    const q = quote(bot.symbol)
+    if (side === 'long') {
+      if (slp && q.bid <= slp) botClose(bot, 'stop_loss')
+      else if (tpp && q.bid >= tpp) botClose(bot, 'take_profit')
+    } else if (slp && q.ask >= slp) botClose(bot, 'stop_loss')
+    else if (tpp && q.ask <= tpp) botClose(bot, 'take_profit')
   }
   const c = closedCandles(bot)
   const last = c[c.length - 1].time
@@ -201,9 +258,15 @@ function stepBot(bot) {
   }
   if (last <= bot.last_candle_time) return
   bot.last_candle_time = last
-  const sig = STRATEGIES[bot.strategy].signals(c, bot.params).at(-1)
-  if (sig === 'buy' && Number(bot.position_qty) === 0) botOpen(bot)
-  else if (sig === 'sell' && Number(bot.position_qty) > 0) botClose(bot, 'signal')
+  const want = { buy: 'long', sell: 'short' }[STRATEGIES[bot.strategy].signals(c, bot.params).at(-1)]
+  if (!want) return
+  let side = Number(bot.position_qty) > 0 ? (bot.position_side ?? 'long') : null
+  if (side && side !== want) {
+    botClose(bot, 'signal')
+    side = null
+  }
+  const direction = bot.direction ?? 'long'
+  if (!side && (direction === want || direction === 'both') && !dailyLimitReached(bot)) botOpen(bot, want)
 }
 
 function tick() {
@@ -234,7 +297,8 @@ function tick() {
   if (changed) save()
 }
 
-const botOut = ({ _errors, last_candle_time, ...b }) => b
+const settingsOut = () => ({ daily_loss_limit_usd: S.settings?.daily_loss_limit_usd ?? null, today_pnl_usd: money(todaysBotPnl()) })
+const botOut = ({ _errors, _limitLogged, last_candle_time, ...b }) => b
 
 function createBot(body) {
   const symbol = String(body.symbol).toUpperCase()
@@ -243,6 +307,7 @@ function createBot(body) {
   let params
   try { params = validate(body.strategy, body.params) } catch (e) { fail(400, e.message) }
   if (!(Number(body.trade_size_usd) > 0)) fail(400, 'Size per trade must be more than 0')
+  if (body.risk_pct && !body.stop_loss_pct) fail(400, 'Risk-based sizing needs a stop-loss: the stop decides how much a trade can lose')
   return { symbol, params }
 }
 
@@ -254,10 +319,10 @@ function seed() {
   placeOrder({ symbol: 'EURUSD', side: 'buy', quantity: 1500 })
   placeOrder({ symbol: 'XAUUSD', side: 'buy', quantity: 0.4 })
   const bot = { id: id(), name: 'Gold trend (example)', symbol: 'XAUUSD', broker: 'paper', strategy: 'sma_cross', params: { fast: 3, slow: 8 },
-    interval: '1m', trade_size_usd: '1000', stop_loss_pct: 0.3, take_profit_pct: 0.5, status: 'running', error: null,
-    position_qty: '0', entry_price: null, realized_pnl: '0.00', trades_closed: 0, wins: 0, created_at: now(), last_candle_time: null }
+    interval: '1m', trade_size_usd: '1000', stop_loss_pct: 0.3, take_profit_pct: 0.5, direction: 'both', risk_pct: null,
+    status: 'running', error: null, position_qty: '0', position_side: null, entry_price: null, realized_pnl: '0.00', trades_closed: 0, wins: 0, created_at: now(), last_candle_time: null }
   S.bots.push(bot)
-  botLog(bot, 'Created: Moving average crossover on XAUUSD 1m, 1000 USD per trade via paper trading')
+  botLog(bot, 'Created: Moving average crossover on XAUUSD 1m, buys and sells short, 1000 USD per trade, via paper trading')
   botLog(bot, 'Started')
   save()
 }
@@ -325,16 +390,27 @@ const routes = [
   ['POST', /^\/bots\/backtest$/, (_, b) => {
     const { symbol, params } = createBot(b)
     const c = candles(symbol, INTERVALS[b.interval], Math.min(Number(b.bars) || 500, 5000) + 1).slice(0, -1)
-    return { ...backtest(c, b.strategy, params, b.stop_loss_pct, b.take_profit_pct, Number(b.trade_size_usd), Number(b.capital) || 10000, BY_SYMBOL[symbol].spread), data_source: 'money fx simulated feed' }
+    return { ...backtest(c, b.strategy, params, b.stop_loss_pct, b.take_profit_pct, Number(b.trade_size_usd), Number(b.capital) || 10000,
+      BY_SYMBOL[symbol].spread, b.direction ?? 'long', b.risk_pct ?? null), data_source: 'money fx simulated feed' }
+  }],
+  ['GET', /^\/bots\/settings$/, settingsOut],
+  ['PUT', /^\/bots\/settings$/, (_, b) => {
+    const v = b.daily_loss_limit_usd == null || b.daily_loss_limit_usd === '' ? null : Number(b.daily_loss_limit_usd)
+    if (v !== null && !(v > 0)) fail(422, 'Daily loss limit must be more than 0')
+    S.settings = { daily_loss_limit_usd: v === null ? null : String(v) }
+    save()
+    return settingsOut()
   }],
   ['GET', /^\/bots$/, () => [...S.bots].reverse().map(botOut)],
   ['POST', /^\/bots$/, (_, b) => {
     const { symbol, params } = createBot(b)
     const bot = { id: id(), name: (b.name || `${symbol} ${STRATEGIES[b.strategy].name}`).trim(), symbol, broker: 'paper', strategy: b.strategy, params,
       interval: b.interval, trade_size_usd: String(Number(b.trade_size_usd)), stop_loss_pct: b.stop_loss_pct ?? null, take_profit_pct: b.take_profit_pct ?? null,
-      status: 'stopped', error: null, position_qty: '0', entry_price: null, realized_pnl: '0.00', trades_closed: 0, wins: 0, created_at: now(), last_candle_time: null }
+      direction: b.direction ?? 'long', risk_pct: b.risk_pct ?? null, status: 'stopped', error: null, position_qty: '0', position_side: null, entry_price: null, realized_pnl: '0.00', trades_closed: 0, wins: 0, created_at: now(), last_candle_time: null }
     S.bots.push(bot)
-    botLog(bot, `Created: ${STRATEGIES[b.strategy].name} on ${symbol} ${b.interval}, ${bot.trade_size_usd} USD per trade via paper trading`)
+    const trades = { long: 'buys only', short: 'sells short only', both: 'buys and sells short' }[bot.direction]
+    const size = bot.risk_pct ? `risking ${bot.risk_pct}% of the balance per trade, at most ${bot.trade_size_usd} USD` : `${bot.trade_size_usd} USD per trade`
+    botLog(bot, `Created: ${STRATEGIES[b.strategy].name} on ${symbol} ${b.interval}, ${trades}, ${size}, via paper trading`)
     save()
     return botOut(bot)
   }],
@@ -343,7 +419,8 @@ const routes = [
     const open = Number(bot.position_qty) > 0
     return {
       bot: botOut(bot),
-      unrealized_pnl: open ? money((quote(bot.symbol).bid - Number(bot.entry_price)) * Number(bot.position_qty)) : null,
+      unrealized_pnl: open ? money((bot.position_side === 'short' ? Number(bot.entry_price) - quote(bot.symbol).ask
+        : quote(bot.symbol).bid - Number(bot.entry_price)) * Number(bot.position_qty)) : null,
       trades: S.botTrades.filter((t) => t.bot_id === bot.id),
       logs: S.botLogs.filter((l) => l.bot_id === bot.id).slice(0, 200),
     }

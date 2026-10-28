@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../api'
 import { dateTime, num, signClass, usd } from '../format'
-import { BotCard, REASONS } from './Bots'
+import { BotCard, REASONS, tradeLabel } from './Bots'
 
 export default function BotDetail() {
   const { id } = useParams()
@@ -40,7 +40,7 @@ export default function BotDetail() {
                   {d.trades.map((t) => (
                     <tr key={t.id}>
                       <td className="muted">{dateTime(t.created_at)}</td>
-                      <td className={t.action === 'open' ? 'up' : 'down'}>{t.action === 'open' ? 'BUY' : 'SELL'}</td>
+                      <td className={tradeLabel(t).includes('BUY') ? 'up' : 'down'}>{tradeLabel(t)}</td>
                       <td>{REASONS[t.reason] ?? t.reason}</td>
                       <td className="r mono">{num(t.quantity)}</td>
                       <td className="r mono">{t.price}</td>

@@ -94,41 +94,54 @@ export function validate(key, raw = {}) {
   return out
 }
 
-export function backtest(candles, key, params, sl, tp, tradeSize, capital, spreadBps = 0) {
+export function backtest(candles, key, params, sl, tp, tradeSize, capital, spreadBps = 0, direction = 'long', riskPct = null) {
   const signals = STRATEGIES[key].signals(candles, params)
   const half = spreadBps / 2 / 10000
   let cash = capital
   let qty = 0
   let entry = 0
   let entryTime = 0
+  let side = null
   const trades = []
   const equity = []
+  // What the open position is worth at a price; a short holds its full value as collateral
+  const value = (price) => (side === 'long' ? qty * price : qty * (2 * entry - price))
   const close = (price, t, reason) => {
-    const pnl = (price - entry) * qty
-    cash += price * qty
-    trades.push({ entry_time: entryTime, exit_time: t, entry_price: entry, exit_price: price, quantity: qty,
-      pnl: Math.round(pnl * 100) / 100, return_pct: (price / entry - 1) * 100, reason })
+    const sign = side === 'long' ? 1 : -1
+    cash += value(price)
+    trades.push({ side, entry_time: entryTime, exit_time: t, entry_price: entry, exit_price: price, quantity: qty,
+      pnl: Math.round(sign * (price - entry) * qty * 100) / 100, return_pct: sign * (price / entry - 1) * 100, reason })
     qty = 0
+    side = null
   }
   candles.forEach((c, i) => {
-    if (qty) {
+    if (side === 'long') {
       const slp = sl ? entry * (1 - sl / 100) : null
       const tpp = tp ? entry * (1 + tp / 100) : null
       if (slp && c.low <= slp) close(Math.min(c.open, slp), c.time, 'stop_loss')
       else if (tpp && c.high >= tpp) close(Math.max(c.open, tpp), c.time, 'take_profit')
+    } else if (side === 'short') {
+      const slp = sl ? entry * (1 + sl / 100) : null
+      const tpp = tp ? entry * (1 - tp / 100) : null
+      if (slp && c.high >= slp) close(Math.max(c.open, slp), c.time, 'stop_loss')
+      else if (tpp && c.low <= tpp) close(Math.min(c.open, tpp), c.time, 'take_profit')
     }
-    const sig = signals[i]
-    if (sig === 'buy' && !qty) {
-      const price = c.close * (1 + half)
-      const size = Math.min(tradeSize, cash)
+    const want = { buy: 'long', sell: 'short' }[signals[i]]
+    if (want && side && side !== want) close(c.close * (side === 'long' ? 1 - half : 1 + half), c.time, 'signal')
+    if (want && !side && (direction === want || direction === 'both')) {
+      const price = c.close * (want === 'long' ? 1 + half : 1 - half)
+      let size = tradeSize
+      if (riskPct && sl) size = Math.min(size, (cash * riskPct) / sl)
+      size = Math.min(size, cash)
       if (size > 0) {
         qty = size / price
         entry = price
         entryTime = c.time
+        side = want
         cash -= size
       }
-    } else if (sig === 'sell' && qty) close(c.close * (1 - half), c.time, 'signal')
-    equity.push({ time: c.time, value: Math.round((cash + qty * c.close) * 100) / 100 })
+    }
+    equity.push({ time: c.time, value: Math.round((cash + (side ? value(c.close) : 0)) * 100) / 100 })
   })
   const final = equity.length ? equity[equity.length - 1].value : capital
   let peak = capital
@@ -145,7 +158,7 @@ export function backtest(candles, key, params, sl, tp, tradeSize, capital, sprea
     start_capital: capital, final_equity: final, total_return_pct: r2((final / capital - 1) * 100),
     buy_hold_return_pct: candles.length ? r2((candles[candles.length - 1].close / candles[0].close - 1) * 100) : 0,
     trades: trades.length, win_rate_pct: trades.length ? Math.round((wins.length / trades.length) * 1000) / 10 : 0,
-    profit_factor: gl ? r2(gw / gl) : null, max_drawdown_pct: r2(dd), open_position: !!qty,
+    profit_factor: gl ? r2(gw / gl) : null, max_drawdown_pct: r2(dd), open_position: !!side,
     trade_list: trades, equity_curve: equity, from: candles[0]?.time, to: candles[candles.length - 1]?.time,
   }
 }

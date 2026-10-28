@@ -5,7 +5,7 @@ import { api } from '../api'
 import { dateTime, signClass, usd } from '../format'
 
 const METHODS = { card: 'Card', bank_transfer: 'Bank transfer', mobile_money: 'Mobile money', crypto: 'Crypto' }
-const TYPES = { deposit: 'Deposit', withdrawal: 'Withdrawal', trade_buy: 'Buy', trade_sell: 'Sell' }
+const TYPES = { deposit: 'Deposit', withdrawal: 'Withdrawal', trade_buy: 'Buy', trade_sell: 'Sell', bot_short: 'Bot short P&L' }
 
 export default function Wallet() {
   return useAccountMode().mode === 'real' ? <RealWallet /> : <DemoWallet />
@@ -52,7 +52,7 @@ function DemoWallet() {
           {wallet && (
             <dl className="kv">
               <dt>Available</dt><dd className="mono">{usd(wallet.available)}</dd>
-              <dt>Reserved for open orders</dt><dd className="mono">{usd(wallet.locked)}</dd>
+              <dt>Reserved (open orders, bot shorts)</dt><dd className="mono">{usd(wallet.locked)}</dd>
             </dl>
           )}
         </div>

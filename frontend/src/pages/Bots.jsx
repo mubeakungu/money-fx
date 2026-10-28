@@ -7,6 +7,12 @@ import { useQuotes } from '../quotes'
 import { useAccountMode } from '../account'
 
 const INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1d']
+const DIRECTION_HINT = {
+  long: 'Buys on buy signals and closes on sell signals.',
+  short: 'Sells short on sell signals and buys back on buy signals. Profits when price falls.',
+  both: 'Always in the market once started: each signal closes the current trade and opens the opposite one.',
+}
+const DIRECTIONS = { long: 'long only', short: 'short only', both: 'long & short' }
 const REASONS = { signal: 'Signal', stop_loss: 'Stop-loss', take_profit: 'Take-profit', manual: 'Manual', closed_on_oanda: 'Closed on OANDA' }
 
 export function BrokerBanner({ brokers }) {
@@ -39,7 +45,7 @@ function BotForm({ strategies, brokers, onBacktest, onCreated }) {
   const instruments = all.length ? all : shown
   const [f, setF] = useState({
     name: '', broker: realMode ? 'oanda' : 'paper', symbol: 'EURUSD', strategy: 'sma_cross', interval: '5m',
-    trade_size_usd: '1000', stop_loss_pct: '1', take_profit_pct: '2', bars: '1000',
+    trade_size_usd: '1000', stop_loss_pct: '1', take_profit_pct: '2', bars: '1000', direction: 'long', sizing: 'fixed', risk_pct: '1',
   })
   const [params, setParams] = useState({})
   const [busy, setBusy] = useState(null)
@@ -57,6 +63,8 @@ function BotForm({ strategies, brokers, onBacktest, onCreated }) {
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
   const body = () => ({
     ...f,
+    sizing: undefined,
+    risk_pct: f.sizing === 'risk' ? Number(f.risk_pct) : null,
     name: f.name || `${f.symbol} ${strat?.name ?? ''}`.trim(),
     params: Object.fromEntries(Object.entries(params).map(([k, v]) => [k, Number(v)])),
     stop_loss_pct: f.stop_loss_pct ? Number(f.stop_loss_pct) : null,
@@ -106,7 +114,25 @@ function BotForm({ strategies, brokers, onBacktest, onCreated }) {
             <input className="mono" inputMode="decimal" value={params[p.name] ?? ''} onChange={(e) => setParams({ ...params, [p.name]: e.target.value })} />
           </label>
         ))}
-        <label>Size per trade (USD)<input className="mono" inputMode="decimal" value={f.trade_size_usd} onChange={set('trade_size_usd')} required /></label>
+        <label>Trades
+          <select value={f.direction} onChange={set('direction')}>
+            <option value="long">Buy only (long)</option>
+            <option value="short">Sell short only</option>
+            <option value="both">Both ways</option>
+          </select>
+          <span className="hint">{DIRECTION_HINT[f.direction]}</span>
+        </label>
+        <label>Sizing
+          <select value={f.sizing} onChange={set('sizing')}>
+            <option value="fixed">Fixed amount</option>
+            <option value="risk">Risk % of balance</option>
+          </select>
+          {f.sizing === 'risk' && <span className="hint">Each trade loses about this % of your balance if the stop-loss is hit.</span>}
+        </label>
+        {f.sizing === 'risk' && (
+          <label>Risk per trade %<input className="mono" inputMode="decimal" value={f.risk_pct} onChange={set('risk_pct')} required /></label>
+        )}
+        <label>{f.sizing === 'risk' ? 'Max size per trade (USD)' : 'Size per trade (USD)'}<input className="mono" inputMode="decimal" value={f.trade_size_usd} onChange={set('trade_size_usd')} required /></label>
         <label>Stop-loss %<input className="mono" inputMode="decimal" value={f.stop_loss_pct} placeholder="none" onChange={set('stop_loss_pct')} /></label>
         <label>Take-profit %<input className="mono" inputMode="decimal" value={f.take_profit_pct} placeholder="none" onChange={set('take_profit_pct')} /></label>
         <label>Backtest candles<input className="mono" inputMode="numeric" value={f.bars} onChange={set('bars')} /></label>
@@ -152,6 +178,46 @@ function Stat({ label, value, sub, cls = '' }) {
   )
 }
 
+function SafetyPanel() {
+  const [s, setS] = useState(null)
+  const [limit, setLimit] = useState('')
+  const [msg, setMsg] = useState(null)
+  const load = () => api('/bots/settings').then((r) => { setS(r); return r })
+  useEffect(() => {
+    load().then((r) => setLimit(r.daily_loss_limit_usd ?? '')).catch(() => {})
+    const t = setInterval(() => load().catch(() => {}), 10000)
+    return () => clearInterval(t)
+  }, [])
+  const save = async (e) => {
+    e.preventDefault()
+    setMsg(null)
+    try {
+      const r = await api('/bots/settings', { method: 'PUT', body: { daily_loss_limit_usd: limit === '' ? null : Number(limit) } })
+      setS(r)
+      setMsg({ ok: true, text: r.daily_loss_limit_usd ? `Saved. Bots stop opening trades for the day after losing ${usd(r.daily_loss_limit_usd)}.` : 'Daily loss limit turned off.' })
+    } catch (err) {
+      setMsg({ ok: false, text: err.message })
+    }
+  }
+  if (!s) return null
+  const hit = s.daily_loss_limit_usd && Number(s.today_pnl_usd) <= -Number(s.daily_loss_limit_usd)
+  return (
+    <form className="panel safety" onSubmit={save}>
+      <div>
+        <h3>Daily loss limit</h3>
+        <p className="muted xs">When your bots' closed trades lose this much in a day (UTC), they stop opening new trades until midnight. Open trades keep their stops.</p>
+      </div>
+      <div className="safety-row">
+        <span className="muted">Today <span className={`mono ${signClass(s.today_pnl_usd)}`}>{usd(s.today_pnl_usd, { signDisplay: 'exceptZero' })}</span></span>
+        {hit && <span className="pill rejected">limit reached</span>}
+        <input className="mono" inputMode="decimal" placeholder="no limit" value={limit} onChange={(e) => setLimit(e.target.value)} aria-label="Daily loss limit in USD" />
+        <button className="btn ghost sm">Save</button>
+      </div>
+      {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`}>{msg.text}</div>}
+    </form>
+  )
+}
+
 export function BotCard({ bot, strategies, onChange }) {
   const strat = strategies.find((s) => s.key === bot.strategy)
   const [confirming, setConfirming] = useState(false)
@@ -170,13 +236,15 @@ export function BotCard({ bot, strategies, onChange }) {
         <span className={`pill ${bot.status === 'running' ? 'filled' : bot.status === 'error' ? 'rejected' : ''}`}>{bot.status}</span>
       </div>
       <div className="muted xs">
-        {bot.symbol} · {bot.interval} · {strat?.name} ({Object.values(bot.params).join('/')}) · {bot.broker === 'oanda' ? 'OANDA' : 'Paper'}
+        {bot.symbol} · {bot.interval} · {strat?.name} ({Object.values(bot.params).join('/')}) · {DIRECTIONS[bot.direction ?? 'long']} · {bot.broker === 'oanda' ? 'OANDA' : 'Paper'}
       </div>
       <dl className="kv">
-        <dt>Position</dt><dd className="mono">{Number(bot.position_qty) ? `${num(bot.position_qty)} @ ${bot.entry_price}` : 'Flat'}</dd>
+        <dt>Position</dt><dd className="mono">{Number(bot.position_qty)
+          ? <><span className={bot.position_side === 'short' ? 'down' : 'up'}>{bot.position_side === 'short' ? 'Short' : 'Long'}</span> {num(bot.position_qty)} @ {bot.entry_price}</>
+          : 'Flat'}</dd>
         <dt>Realized P&L</dt><dd className={`mono ${signClass(bot.realized_pnl)}`}>{usd(bot.realized_pnl, { signDisplay: 'exceptZero' })}</dd>
         <dt>Closed trades</dt><dd className="mono">{bot.trades_closed}{winRate !== null && ` · ${winRate}% wins`}</dd>
-        <dt>Risk</dt><dd className="mono">{usd(bot.trade_size_usd, { maximumFractionDigits: 0 })} · SL {bot.stop_loss_pct ?? '—'}% · TP {bot.take_profit_pct ?? '—'}%</dd>
+        <dt>Risk</dt><dd className="mono">{bot.risk_pct ? `${bot.risk_pct}% (max ${usd(bot.trade_size_usd, { maximumFractionDigits: 0 })})` : usd(bot.trade_size_usd, { maximumFractionDigits: 0 })} · SL {bot.stop_loss_pct ?? '—'}% · TP {bot.take_profit_pct ?? '—'}%</dd>
       </dl>
       {(err || bot.error) && <div className="notice err">{err || bot.error}</div>}
       <div className="actions">
@@ -217,6 +285,7 @@ export default function Bots() {
         {bots.length > 0 && <span className="muted">Bots realized P&L <span className={`mono ${signClass(total)}`}>{usd(total, { signDisplay: 'exceptZero' })}</span></span>}
       </div>
       <BrokerBanner brokers={brokers} />
+      <SafetyPanel />
       {bots.length > 0 && <div className="bot-grid">{bots.map((b) => <BotCard key={b.id} bot={b} strategies={strategies} onChange={load} />)}</div>}
       {strategies.length > 0 && (
         <BotForm strategies={strategies} brokers={brokers} onBacktest={(r, cfg) => setResult({ r, cfg })}
@@ -228,3 +297,8 @@ export default function Bots() {
 }
 
 export { REASONS }
+
+export function tradeLabel(t) {
+  if (t.side === 'short') return t.action === 'open' ? 'SELL SHORT' : 'BUY BACK'
+  return t.action === 'open' ? 'BUY' : 'SELL'
+}
