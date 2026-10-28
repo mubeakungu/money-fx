@@ -124,6 +124,9 @@ settles its profit or loss when it closes.
    take-profit are attached to each OANDA order, so OANDA enforces them even if your computer
    or this server is off.
 
+Each bot's page charts its market with what the strategy sees (the moving averages, RSI or price channel)
+and marks every entry and exit, so you can see why it traded. The Trade chart has MA 20, MA 50 and RSI toggles.
+
 The bot checks once per closed candle (it never acts on a half-formed candle) and watches stops
 every 2 seconds. If a bot hits 5 errors in a row (for example not enough funds), it stops itself.
 

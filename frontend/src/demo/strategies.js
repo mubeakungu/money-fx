@@ -1,37 +1,7 @@
 // Port of backend/app/strategies.py and the backtester in backend/app/bots.py.
+import { rsi, sma } from '../indicators'
+
 const p = (name, label, def, min, max) => ({ name, label, default: def, min, max, integer: true })
-
-function sma(values, n) {
-  let total = 0
-  return values.map((v, i) => {
-    total += v
-    if (i >= n) total -= values[i - n]
-    return i >= n - 1 ? total / n : null
-  })
-}
-
-function rsi(closes, n) {
-  const out = closes.map(() => null)
-  if (closes.length <= n) return out
-  let g = 0
-  let l = 0
-  for (let i = 1; i <= n; i++) {
-    const d = closes[i] - closes[i - 1]
-    g += Math.max(d, 0)
-    l += Math.max(-d, 0)
-  }
-  let ag = g / n
-  let al = l / n
-  for (let i = n; i < closes.length; i++) {
-    if (i > n) {
-      const d = closes[i] - closes[i - 1]
-      ag = (ag * (n - 1) + Math.max(d, 0)) / n
-      al = (al * (n - 1) + Math.max(-d, 0)) / n
-    }
-    out[i] = al === 0 ? 100 : 100 - 100 / (1 + ag / al)
-  }
-  return out
-}
 
 export const STRATEGIES = {
   sma_cross: {

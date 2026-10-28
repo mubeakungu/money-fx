@@ -29,7 +29,7 @@ Required before any real user deposits real funds. These are legal and safety re
 - Leverage, margin and short selling (common for forex and CFDs, heavily regulated)
 - Multi-currency wallets (hold EUR, KES, BTC directly) and FX conversion
 - Watchlists and price alerts (push/email)
-- Technical indicators and drawing tools on charts
+- ~~Technical indicators on charts~~ (done: MA 20/50, RSI; bot charts show their strategy and trades); drawing tools
 - Order book / depth view for crypto
 - Portfolio performance history chart and downloadable statements
 - Demo vs live account toggle
