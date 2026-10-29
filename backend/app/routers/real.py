@@ -79,8 +79,11 @@ def candles(symbol: str, interval: str = "1m", limit: int = Query(200, ge=1, le=
 
 
 def _bot_names(db: Session, account: models.Account) -> dict:
-    bots = db.scalars(select(models.Bot).where(models.Bot.account_id == account.id, models.Bot.broker == "oanda")).all()
-    return {b.external_trade_id: b.name for b in bots if b.external_trade_id}
+    """OANDA trade id -> name of the bot that opened it, for open and past bot trades."""
+    rows = db.execute(select(models.BotTrade.external_id, models.Bot.name).join(models.Bot, models.BotTrade.bot_id == models.Bot.id)
+                      .where(models.Bot.account_id == account.id, models.Bot.broker == "oanda",
+                             models.BotTrade.external_id.is_not(None))).all()
+    return dict(rows)
 
 
 @router.get("/trades")

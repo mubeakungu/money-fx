@@ -3,6 +3,7 @@ import { RealPortfolio } from '../real/RealPages'
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
+import BotPositions from '../components/BotPositions'
 import { ASSET_LABELS, num, pct, signClass, usd } from '../format'
 
 const COLORS = { cash: '#8a94a6', forex: '#4c8dff', crypto: '#f7931a', stock: '#16c784', commodity: '#e5b53b' }
@@ -86,6 +87,7 @@ function DemoPortfolio() {
           </div>
         )}
       </div>
+      <BotPositions />
     </div>
   )
 }

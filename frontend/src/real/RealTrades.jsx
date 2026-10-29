@@ -55,7 +55,7 @@ export function ClosedTrades({ trades }) {
           {trades.map((t) => (
             <tr key={t.id}>
               <td className="muted">{unixDate(t.closed_at)}</td>
-              <td className="sym">{t.symbol}</td>
+              <td><span className="sym">{t.symbol}</span>{t.bot && <div className="muted xs">bot: {t.bot}</div>}</td>
               <td className={t.side === 'buy' ? 'up' : 'down'}>{t.side === 'buy' ? 'LONG' : 'SHORT'}</td>
               <td className="r mono">{num(t.units)}</td>
               <td className="r mono">{t.open_price}</td>
