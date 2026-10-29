@@ -172,3 +172,22 @@ def test_add_missing_columns(tmp_path, monkeypatch):
     assert {"direction", "risk_pct", "position_side"} <= cols
     with engine.connect() as c:
         assert c.execute(text("SELECT direction FROM bots")).scalar() == "long"
+
+
+def test_bot_positions_endpoint(client, user, forced):
+    client.post("/api/wallet/deposit", json={"amount": "20000"}, headers=user)
+    long_id = _bot(client, user, name="L", stop_loss_pct=1)
+    short_id = _bot(client, user, name="S", direction="short", take_profit_pct=2)
+    with SessionLocal() as db:
+        for i in (long_id, short_id):
+            db.get(models.Bot, i).last_candle_time = 0
+        forced["signal"] = "buy"
+        step(db, db.get(models.Bot, long_id))
+        forced["signal"] = "sell"
+        step(db, db.get(models.Bot, short_id))
+        db.commit()
+    rows = {r["bot"]: r for r in client.get("/api/bots/positions", headers=user).json()}
+    assert rows["L"]["side"] == "long" and Decimal(rows["L"]["stop_loss"]) < Decimal(rows["L"]["entry_price"])
+    assert rows["S"]["side"] == "short" and Decimal(rows["S"]["take_profit"]) < Decimal(rows["S"]["entry_price"])
+    assert rows["S"]["unrealized_pnl"] is not None and rows["L"]["opened_at"]
+    assert client.get("/api/bots/positions?broker=oanda", headers=user).json() == []

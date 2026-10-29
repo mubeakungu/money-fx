@@ -395,6 +395,18 @@ const routes = [
       BY_SYMBOL[symbol].spread, b.direction ?? 'long', b.risk_pct ?? null), data_source: 'money fx simulated feed' }
   }],
   ['GET', /^\/bots\/settings$/, settingsOut],
+  ['GET', /^\/bots\/positions$/, () => S.bots.filter((b) => Number(b.position_qty) > 0).map((b) => {
+    const side = b.position_side ?? 'long'
+    const q = quote(b.symbol)
+    const dp = BY_SYMBOL[b.symbol].price_decimals
+    const price = side === 'long' ? q.bid : q.ask
+    const entry = Number(b.entry_price)
+    const [sl, tp] = stopPrices(b, entry, side)
+    const opened = S.botTrades.find((t) => t.bot_id === b.id && t.action === 'open')
+    return { bot_id: b.id, bot: b.name, broker: 'paper', symbol: b.symbol, side, quantity: b.position_qty, entry_price: b.entry_price,
+      price: fixed(price, dp), unrealized_pnl: money((side === 'long' ? price - entry : entry - price) * Number(b.position_qty)),
+      stop_loss: sl ? fixed(sl, dp) : null, take_profit: tp ? fixed(tp, dp) : null, status: b.status, opened_at: opened?.created_at ?? null, external_id: null }
+  })],
   ['PUT', /^\/bots\/settings$/, (_, b) => {
     const v = b.daily_loss_limit_usd == null || b.daily_loss_limit_usd === '' ? null : Number(b.daily_loss_limit_usd)
     if (v !== null && !(v > 0)) fail(422, 'Daily loss limit must be more than 0')

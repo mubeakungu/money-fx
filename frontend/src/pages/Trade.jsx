@@ -9,6 +9,7 @@ import { useQuotes } from '../quotes'
 import { useAccountMode } from '../account'
 import RealTicket from '../real/RealTicket'
 import { OpenTrades } from '../real/RealTrades'
+import BotPositions from '../components/BotPositions'
 
 export default function Trade() {
   const { symbol = 'EURUSD' } = useParams()
@@ -26,7 +27,6 @@ export default function Trade() {
   useEffect(() => {
     const load = () => api(real ? '/real/trades' : '/orders?limit=10').then(setOrders).catch(() => setOrders([]))
     load()
-    if (!real) return
     const t = setInterval(load, 3000)
     return () => clearInterval(t)
   }, [refreshKey, real])
@@ -36,12 +36,14 @@ export default function Trade() {
       <MarketList selected={instrument?.symbol} onSelect={(s) => navigate(`/trade/${s}`)} />
       <div className="trade-main">
         {instrument ? <PriceChart instrument={instrument} /> : <div className="panel chart-panel muted center">Loading markets…</div>}
+        {!real && <BotPositions compact hideEmpty />}
         <div className="panel">
           <h3>{real ? 'Open positions on OANDA' : 'Recent orders'}</h3>
           {real
             ? <OpenTrades trades={orders} onChange={() => setRefreshKey((k) => k + 1)} compact />
             : <OrdersTable orders={orders} onChange={() => setRefreshKey((k) => k + 1)} compact />}
         </div>
+
       </div>
       {real
         ? <RealTicket key="real" instrument={instrument} onPlaced={() => setRefreshKey((k) => k + 1)} />

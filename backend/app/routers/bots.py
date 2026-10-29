@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..alerts import TelegramError, new_link_code, send_pending, telegram
 from ..bots import backtest, bot_log, record_close, todays_bot_pnl
-from ..brokers import OANDA_SYMBOLS, BrokerError, get_broker, oanda_configured
+from ..brokers import OANDA_SYMBOLS, BrokerError, get_broker, oanda_configured, stop_prices
 from ..config import OANDA_OWNER_EMAILS
 from ..database import get_db
 from ..schemas import Dec, Out
@@ -165,6 +165,36 @@ def put_settings(body: BotSettings, account: models.Account = Depends(get_accoun
     account.bot_daily_loss_limit = body.daily_loss_limit_usd
     db.commit()
     return _settings(db, account)
+
+
+@router.get("/positions")
+def positions(broker: Literal["paper", "oanda", "all"] = "all", account: models.Account = Depends(get_account),
+              db: Session = Depends(get_db)):
+    """Every open bot trade with its live P&L, so bot trades show next to your own."""
+    q = select(models.Bot).where(models.Bot.account_id == account.id, models.Bot.position_qty > 0)
+    if broker != "all":
+        q = q.where(models.Bot.broker == broker)
+    out = []
+    for bot in db.scalars(q.order_by(models.Bot.id)):
+        side = bot.position_side or "long"
+        price = pnl = None
+        try:
+            quote = get_broker(bot.broker).quote(bot.symbol)
+            price = quote["bid"] if side == "long" else quote["ask"]
+            pnl = ((price - bot.entry_price) if side == "long" else (bot.entry_price - price)) * bot.position_qty
+        except BrokerError:
+            pass  # still list the trade; the price is just unknown right now
+        sl, tp = stop_prices(bot.entry_price, bot)
+        opened = db.scalar(select(models.BotTrade.created_at).where(models.BotTrade.bot_id == bot.id,
+                                                                     models.BotTrade.action == "open")
+                           .order_by(models.BotTrade.id.desc()).limit(1))
+        fmt = lambda d, places="0.00000001": None if d is None else format(d.quantize(Decimal(places)).normalize(), "f")  # noqa: E731
+        out.append({"bot_id": bot.id, "bot": bot.name, "broker": bot.broker, "symbol": bot.symbol, "side": side,
+                    "quantity": fmt(bot.position_qty), "entry_price": fmt(bot.entry_price), "price": fmt(price),
+                    "unrealized_pnl": None if pnl is None else format(pnl.quantize(Decimal("0.01")), "f"),
+                    "stop_loss": fmt(sl), "take_profit": fmt(tp), "status": bot.status,
+                    "opened_at": opened.isoformat() if opened else None, "external_id": bot.external_trade_id})
+    return out
 
 
 @router.post("/telegram/link")
